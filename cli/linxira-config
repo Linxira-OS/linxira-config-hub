@@ -40,9 +40,11 @@ ${BOLD}Commands:${NC}
   workflow <name>       Apply workflow template
   service <svc> <act>   Manage system services
   security <action>     Security hardening & firewall
-  ssh <action>          SSH server management
+  ssh <action>          SSH server & key management
   rdp <action>          Remote desktop (RDP/VNC)
   virt <action>         Virtualization (KVM/QEMU/Docker)
+  power <action>        Power management (sleep/suspend/hibernate)
+  install <pkg>         Post-install software packages
   gpu <action>          GPU driver management
   info                  Show system information
   help                  Show this help
@@ -58,8 +60,10 @@ ${BOLD}Security:${NC}
 ${BOLD}SSH:${NC}
   linxira-config ssh on                Enable & start SSH daemon
   linxira-config ssh off               Disable SSH daemon
-  linxira-config ssh status            Show SSH status
+  linxira-config ssh status            Show SSH status & connection info
   linxira-config ssh port <number>     Change SSH port (default 22)
+  linxira-config ssh keygen            Generate SSH key pair (ed25519)
+  linxira-config ssh keyshow           Show public key for copying
 
 ${BOLD}Remote Desktop:${NC}
   linxira-config rdp on                Install & enable RDP (xrdp)
@@ -72,6 +76,25 @@ ${BOLD}Virtualization:${NC}
   linxira-config virt kvm-on           Enable KVM/QEMU
   linxira-config virt docker-on        Install & enable Docker
   linxira-config virt podman-on        Enable Podman (pre-installed)
+
+${BOLD}Power:${NC}
+  linxira-config power status          Show power settings
+  linxira-config power nosleep         Disable auto-sleep/suspend
+  linxira-config power nosuspend       Disable suspend on lid close
+  linxira-config power noscreen        Disable screen blanking
+  linxira-config power restore         Restore default power settings
+
+${BOLD}Install (post-install packages):${NC}
+  linxira-config install bio           Bioinformatics tools
+  linxira-config install science       Scientific computing
+  linxira-config install dev           Development tools
+  linxira-config install ai            AI/ML frameworks
+  linxira-config install office        Office suite + PDF
+  linxira-config install media         Media production
+  linxira-config install gaming        Gaming packages
+  linxira-config install docker        Docker engine
+  linxira-config install flatpak       Flatpak + Flathub
+  linxira-config install extras        Common extras (htop, neofetch, etc.)
 
 ${BOLD}Mirror:${NC}
   linxira-config mirror list           List available mirrors
@@ -449,8 +472,32 @@ ssh_manage() {
             sudo systemctl restart sshd
             success "SSH port changed to $port"
             ;;
+        keygen)
+            local keyfile="$HOME/.ssh/id_ed25519"
+            if [ -f "$keyfile" ]; then
+                warn "Key already exists at $keyfile"
+                read -p "Overwrite? (y/N): " confirm
+                [ "$confirm" != "y" ] && return
+            fi
+            ssh-keygen -t ed25519 -C "linxira@$(hostname)" -f "$keyfile" -N ""
+            success "SSH key generated: $keyfile"
+            echo ""
+            info "Public key (copy to remote server):"
+            cat "${keyfile}.pub"
+            ;;
+        keyshow)
+            local keyfile="$HOME/.ssh/id_ed25519.pub"
+            if [ ! -f "$keyfile" ]; then
+                warn "No SSH key found. Generate one with: linxira-config ssh keygen"
+                return
+            fi
+            echo ""
+            info "Your public key (copy this to authorized_keys):"
+            cat "$keyfile"
+            echo ""
+            ;;
         *)
-            error "Unknown SSH action: $action (use on/off/status/port)"
+            error "Unknown SSH action: $action (use on/off/status/port/keygen/keyshow)"
             ;;
     esac
 }
@@ -595,6 +642,191 @@ gpu_action() {
     esac
 }
 
+# ─── Power Management ───────────────────────────────────────
+
+power_manage() {
+    local action=${1:-status}
+
+    case $action in
+        status)
+            header "Power Settings"
+            # Sleep/suspend
+            local sleep_val=$(cat /etc/systemd/sleep.conf 2>/dev/null | grep "^#HandleSuspendKey\|^HandleSuspendKey" | awk -F= '{print $2}' | xargs || echo "suspend")
+            local lid_val=$(cat /etc/systemd/sleep.conf 2>/dev/null | grep "^#HandleLidSwitch\|^HandleLidSwitch" | awk -F= '{print $2}' | xargs || echo "suspend")
+            info "Suspend on sleep key: $sleep_val"
+            info "Suspend on lid close: $lid_val"
+
+            # Screen blanking
+            local blanking
+            if grep -rq "Blanking" /etc/sddm.conf.d/ 2>/dev/null; then
+                blanking="configured"
+            else
+                blanking="default"
+            fi
+            info "Screen blanking: $blanking"
+
+            # Sleep mask
+            local masked=$(systemctl is-masked sleep.target 2>/dev/null || echo "not masked")
+            if [ "$masked" = "masked" ]; then
+                info "sleep.target: MASKED (disabled)"
+            else
+                info "sleep.target: active"
+            fi
+            echo ""
+            ;;
+        nosleep)
+            require_root
+            info "Disabling auto-sleep/suspend..."
+            sudo sed -i 's/^#HandleSuspendKey=.*/HandleSuspendKey=ignore/' /etc/systemd/sleep.conf 2>/dev/null || true
+            sudo sed -i 's/^HandleSuspendKey=.*/HandleSuspendKey=ignore/' /etc/systemd/sleep.conf 2>/dev/null || true
+            sudo sed -i 's/^#HandleLidSwitch=.*/HandleLidSwitch=ignore/' /etc/systemd/sleep.conf 2>/dev/null || true
+            sudo sed -i 's/^HandleLidSwitch=.*/HandleLidSwitch=ignore/' /etc/systemd/sleep.conf 2>/dev/null || true
+            # Also mask sleep targets
+            sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null || true
+            success "Auto-sleep and suspend disabled"
+            ;;
+        nosuspend)
+            require_root
+            info "Disabling suspend on lid close..."
+            sudo sed -i 's/^#HandleLidSwitch=.*/HandleLidSwitch=ignore/' /etc/systemd/sleep.conf 2>/dev/null || true
+            sudo sed -i 's/^HandleLidSwitch=.*/HandleLidSwitch=ignore/' /etc/systemd/sleep.conf 2>/dev/null || true
+            success "Lid close suspend disabled"
+            ;;
+        noscreen)
+            require_root
+            info "Disabling screen blanking..."
+            # KDE/Plasma
+            if command -v kwriteconfig5 &>/dev/null; then
+                kwriteconfig5 --file kscreenlockerrc --group Daemon --key Autolock false
+                kwriteconfig5 --file kscreenlockerrc --group Daemon --key Timeout 0
+            fi
+            # SDDM
+            sudo mkdir -p /etc/sddm.conf.d
+            echo -e "[General]\nGreeterEnv=QT_SCREEN_SCALE_FACTORS=1" | sudo tee /etc/sddm.conf.d/no-blank.conf >/dev/null
+            success "Screen blanking disabled"
+            ;;
+        restore)
+            require_root
+            info "Restoring default power settings..."
+            sudo cp /etc/systemd/sleep.conf /etc/systemd/sleep.conf.bak 2>/dev/null || true
+            sudo systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null || true
+            sudo sed -i 's/^HandleSuspendKey=.*/#HandleSuspendKey=suspend/' /etc/systemd/sleep.conf 2>/dev/null || true
+            sudo sed -i 's/^HandleLidSwitch=.*/#HandleLidSwitch=suspend/' /etc/systemd/sleep.conf 2>/dev/null || true
+            success "Default power settings restored"
+            ;;
+        *)
+            error "Unknown power action: $action (use status/nosleep/nosuspend/noscreen/restore)"
+            ;;
+    esac
+}
+
+# ─── Post-install Packages ──────────────────────────────────
+
+install_packages() {
+    local category=${1:-}
+    [ -z "$category" ] && error "Please specify a category. Use: linxira-config install help"
+
+    header "Installing: $category"
+    require_root
+
+    case $category in
+        bio)
+            info "Installing bioinformatics tools..."
+            sudo pacman -S --noconfirm --needed \
+                bwa samtools bedtools bcftools \
+                fastqc multiqc trimmomatic spades \
+                salmon hisat2 stringtie \
+                igv minimap2 picard
+            success "Bioinformatics tools installed"
+            ;;
+        science)
+            info "Installing scientific computing packages..."
+            sudo pacman -S --noconfirm --needed \
+                r octave gnuplot paraview \
+                texlive-bin texlive-core texlive-latexextra texlive-fontsextra texlive-pictures texlive-langchinese \
+                jupyterlab python-numpy scipy matplotlib pandas
+            success "Scientific computing packages installed"
+            ;;
+        dev)
+            info "Installing development tools..."
+            sudo pacman -S --noconfirm --needed \
+                rust go nodejs typescript python python-pip \
+                cmake gcc make gdb strace valgrind \
+                neovim tmux
+            success "Development tools installed"
+            ;;
+        ai)
+            info "Installing AI/ML frameworks..."
+            sudo pacman -S --noconfirm --needed \
+                python-scikit-learn jupyterlab \
+                python-onnxruntime python-h5py
+            info "Note: PyTorch/TensorFlow use pip for CUDA support:"
+            info "  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121"
+            info "  pip install tensorflow"
+            success "AI/ML base packages installed"
+            ;;
+        office)
+            info "Installing office suite..."
+            sudo pacman -S --noconfirm --needed \
+                libreoffice-fresh hunspell-en \
+                evince zathura zathura-pdf-mupdf
+            success "Office packages installed"
+            ;;
+        media)
+            info "Installing media production..."
+            sudo pacman -S --noconfirm --needed \
+                gimp inkscape blender obs-studio \
+                ffmpeg mpv deadbeef
+            success "Media packages installed"
+            ;;
+        gaming)
+            info "Installing gaming packages..."
+            sudo pacman -S --noconfirm --needed \
+                steam lutris wine \
+                gamemode mangohud lib32-gamemode
+            success "Gaming packages installed"
+            ;;
+        docker)
+            info "Installing Docker..."
+            sudo pacman -S --noconfirm --needed docker docker-compose
+            sudo systemctl enable --now docker
+            sudo usermod -aG docker "$USER" 2>/dev/null || true
+            success "Docker installed and enabled"
+            ;;
+        flatpak)
+            info "Installing Flatpak..."
+            sudo pacman -S --noconfirm --needed flatpak
+            flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+            success "Flatpak + Flathub configured"
+            ;;
+        extras)
+            info "Installing common extras..."
+            sudo pacman -S --noconfirm --needed \
+                htop btop tmux neofetch fastfetch \
+                jq yq ripgrep fd fzf bat exa \
+                zip unzip unrar p7zip \
+                wget curl git lazygit
+            success "Extras installed"
+            ;;
+        help|--help|-h)
+            echo "Available categories:"
+            echo "  bio        Bioinformatics (BWA, SAMtools, Salmon, etc.)"
+            echo "  science    Scientific computing (R, Octave, gnuplot, texlive)"
+            echo "  dev        Development (Rust, Go, Node.js, Python, etc.)"
+            echo "  ai         AI/ML frameworks (scikit-learn, onnxruntime)"
+            echo "  office     Office suite (LibreOffice, PDF viewers)"
+            echo "  media      Media production (GIMP, Inkscape, OBS, ffmpeg)"
+            echo "  gaming     Gaming (Steam, Lutris, Wine, Gamemode)"
+            echo "  docker     Docker engine + Compose"
+            echo "  flatpak    Flatpak package manager + Flathub"
+            echo "  extras     Common utilities (htop, bat, fzf, ripgrep, etc.)"
+            ;;
+        *)
+            error "Unknown package category: $category (use 'help' for list)"
+            ;;
+    esac
+}
+
 # ─── System Info ─────────────────────────────────────────────
 
 show_info() {
@@ -649,6 +881,12 @@ case "${1:-help}" in
         ;;
     virt)
         virt_manage "${2:-status}"
+        ;;
+    power)
+        power_manage "${2:-status}"
+        ;;
+    install)
+        install_packages "${2:-help}"
         ;;
     gpu)
         gpu_action "${2:-info}"
