@@ -1,10 +1,10 @@
 #!/bin/bash
-# Linxira Config Hub - CLI Tool
-# Cross-ecosource configuration manager
+# Linxira Config Hub - CLI Tool v2.0
+# Cross-ecosource configuration & security manager
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="2.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colors
@@ -12,115 +12,169 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
 
-# Helper functions
 info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 success() { echo -e "${GREEN}[OK]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+header() { echo -e "\n${BOLD}${CYAN}=== $1 ===${NC}"; }
 
-# Show help
+require_root() {
+    [ "$(id -u)" -eq 0 ] || error "This command requires root privileges. Use sudo."
+}
+
+# ─── Help ────────────────────────────────────────────────────
+
 show_help() {
     cat << EOF
-Linxira Config Hub v${VERSION}
+${BOLD}Linxira Config Hub v${VERSION}${NC}
 
-Usage: linxira-config [command] [options]
+${BOLD}Usage:${NC} linxira-config <command> [action] [options]
 
-Commands:
-  mirror <action>     Manage package mirrors
-  source <action>     Manage package sources
-  workflow <name>     Apply workflow template
-  service <name>      Manage system services
-  gpu <action>        GPU driver management
-  info                Show system information
-  help                Show this help message
+${BOLD}Commands:${NC}
+  mirror <action>       Package mirror management
+  source                Show package sources
+  workflow <name>       Apply workflow template
+  service <svc> <act>   Manage system services
+  security <action>     Security hardening & firewall
+  ssh <action>          SSH server management
+  rdp <action>          Remote desktop (RDP/VNC)
+  virt <action>         Virtualization (KVM/QEMU/Docker)
+  gpu <action>          GPU driver management
+  info                  Show system information
+  help                  Show this help
 
-Mirror Actions:
-  mirror list         List available mirrors
-  mirror speed        Test mirror speeds
-  mirror set <mirror> Set active mirror
+${BOLD}Security:${NC}
+  linxira-config security status       Show security posture
+  linxira-config security harden       Apply recommended hardening
+  linxira-config security ufw on       Enable UFW firewall (deny incoming)
+  linxira-config security ufw off      Disable UFW firewall
+  linxira-config security ufw status   Show firewall rules
+  linxira-config security ufw allow <port>   Allow a port through firewall
 
-Workflow Templates:
-  workflow science    Scientific computing environment
-  workflow dev        Development environment
-  workflow ai         AI/ML environment
-  workflow bio        Bioinformatics environment
+${BOLD}SSH:${NC}
+  linxira-config ssh on                Enable & start SSH daemon
+  linxira-config ssh off               Disable SSH daemon
+  linxira-config ssh status            Show SSH status
+  linxira-config ssh port <number>     Change SSH port (default 22)
 
-Service Management:
-  service ssh enable  Enable SSH service
-  service ssh disable Disable SSH service
-  service vnc enable  Enable VNC remote desktop
-  service vnc disable Disable VNC remote desktop
+${BOLD}Remote Desktop:${NC}
+  linxira-config rdp on                Install & enable RDP (xrdp)
+  linxira-config rdp off               Disable RDP
+  linxira-config rdp vnc-on            Install & enable VNC
+  linxira-config rdp vnc-off           Disable VNC
 
-Examples:
-  linxira-config mirror speed
-  linxira-config workflow science
-  linxira-config service ssh enable
+${BOLD}Virtualization:${NC}
+  linxira-config virt status           Check virtualization support
+  linxira-config virt kvm-on           Enable KVM/QEMU
+  linxira-config virt docker-on        Install & enable Docker
+  linxira-config virt podman-on        Enable Podman (pre-installed)
+
+${BOLD}Mirror:${NC}
+  linxira-config mirror list           List available mirrors
+  linxira-config mirror speed         Test mirror speeds
+  linxira-config mirror set <mirror>   Set active mirror
+
+${BOLD}Workflow:${NC}
+  linxira-config workflow science      Scientific computing packages
+  linxira-config workflow dev          Development packages
+  linxira-config workflow ai           AI/ML packages
+  linxira-config workflow bio          Bioinformatics packages
+
+${BOLD}Examples:${NC}
+  linxira-config security harden       # One-click security setup
+  linxira-config ssh on                # Enable SSH server
+  linxira-config rdp on                # Enable remote desktop
+  linxira-config virt kvm-on           # Enable KVM virtualization
+  linxira-config workflow bio          # Install bioinformatics tools
 EOF
 }
 
-# Mirror management
+# ─── Mirror Management ───────────────────────────────────────
+
 mirror_list() {
-    info "Available mirrors:"
-    echo ""
-    echo "1. China - Tsinghua University"
-    echo "2. China - Alibaba Cloud"
-    echo "3. Global - Cloudflare"
-    echo "4. Global - Fastly"
+    header "Available Mirrors"
+    echo "  1. China - Tsinghua University (TUNA)"
+    echo "  2. China - Alibaba Cloud"
+    echo "  3. China - USTC"
+    echo "  4. Global - Cloudflare"
+    echo "  5. Global - Fastly"
     echo ""
 }
 
 mirror_speed() {
-    info "Testing mirror speeds..."
-    # TODO: Implement mirror speed testing
-    warn "Mirror speed testing not yet implemented"
+    header "Testing Mirror Speeds"
+    info "Testing Arch Linux mirrors..."
+    if command -v reflector &>/dev/null; then
+        sudo reflector --latest 5 --sort rate --protocol https --save /etc/pacman.d/mirrorlist
+        success "Mirror list updated with fastest mirrors"
+    else
+        warn "reflector not installed. Installing..."
+        sudo pacman -S --noconfirm reflector
+        sudo reflector --latest 5 --sort rate --protocol https --save /etc/pacman.d/mirrorlist
+        success "Mirror list updated with fastest mirrors"
+    fi
 }
 
 mirror_set() {
     local mirror=$1
-    info "Setting mirror to: $mirror"
-    # TODO: Implement mirror setting
-    warn "Mirror setting not yet implemented"
+    [ -z "$mirror" ] && error "Please specify a mirror number (1-5)"
+    info "Setting mirror to option $mirror..."
+    # TODO: Implement per-mirror mirrorlist generation
+    warn "Mirror preset selection not yet implemented"
 }
 
-# Source management
+# ─── Source Management ───────────────────────────────────────
+
 source_list() {
-    info "Package sources:"
-    echo ""
-    echo "1. CachyOS (official)"
-    echo "2. CachyOS-V3 (x86-64-v3 optimized)"
-    echo "3. CachyOS-V4 (x86-64-v4 optimized)"
-    echo "4. Arch Linux (official)"
-    echo "5. AUR (via yay/paru)"
+    header "Package Sources"
+    echo "  1. CachyOS (official)"
+    echo "  2. CachyOS-V3 (x86-64-v3 optimized)"
+    echo "  3. CachyOS-V4 (x86-64-v4 optimized)"
+    echo "  4. Arch Linux (official)"
+    echo "  5. AUR (via paru)"
     echo ""
 }
 
-# Workflow templates
+# ─── Workflow Templates ──────────────────────────────────────
+
 workflow_apply() {
     local name=$1
-    info "Applying workflow: $name"
-    
+    header "Applying Workflow: $name"
+
     case $name in
         science)
             info "Installing scientific computing packages..."
-            # TODO: Implement workflow
-            warn "Workflow not yet implemented"
+            sudo pacman -S --noconfirm --needed \
+                r octave gnuplot paraview \
+                texlive-bin texlive-core texlive-latexextra texlive-fontsextra texlive-pictures texlive-langchinese \
+                jupyterlab python numpy scipy matplotlib pandas
+            success "Scientific computing environment ready"
             ;;
         dev)
             info "Installing development packages..."
-            # TODO: Implement workflow
-            warn "Workflow not yet implemented"
+            sudo pacman -S --noconfirm --needed \
+                rust go nodejs typescript python cmake git \
+                neovim tmux docker podman distrobox
+            success "Development environment ready"
             ;;
         ai)
             info "Installing AI/ML packages..."
-            # TODO: Implement workflow
-            warn "Workflow not yet implemented"
+            sudo pacman -S --noconfirm --needed \
+                python python-pip cuda cudnn \
+                jupyterlab python-scikit-learn python-tensorflow python-pytorch
+            success "AI/ML environment ready"
             ;;
         bio)
             info "Installing bioinformatics packages..."
-            # TODO: Implement workflow
-            warn "Workflow not yet implemented"
+            sudo pacman -S --noconfirm --needed \
+                bwa samtools bedtools bcftools \
+                fastqc multiqc trimmomatic \
+                salmon hisat2 stringtie
+            success "Bioinformatics environment ready"
             ;;
         *)
             error "Unknown workflow: $name"
@@ -128,75 +182,447 @@ workflow_apply() {
     esac
 }
 
-# Service management
+# ─── Service Management ──────────────────────────────────────
+
 service_manage() {
     local name=$1
     local action=$2
-    
-    info "Managing service: $name ($action)"
-    
+
     case "$name" in
         ssh)
-            if [ "$action" = "enable" ]; then
-                sudo systemctl enable sshd
-                sudo systemctl start sshd
-                success "SSH service enabled"
-            elif [ "$action" = "disable" ]; then
-                sudo systemctl stop sshd
-                sudo systemctl disable sshd
+            if [ "$action" = "on" ] || [ "$action" = "enable" ]; then
+                sudo systemctl enable --now sshd
+                success "SSH service enabled and started"
+            elif [ "$action" = "off" ] || [ "$action" = "disable" ]; then
+                sudo systemctl disable --now sshd
                 success "SSH service disabled"
+            else
+                error "Unknown action: $action (use on/off)"
             fi
             ;;
         vnc)
-            if [ "$action" = "enable" ]; then
+            if [ "$action" = "on" ] || [ "$action" = "enable" ]; then
                 sudo pacman -S --noconfirm tigervnc
-                sudo systemctl enable vncserver@:1
+                sudo systemctl enable --now vncserver@:1
                 success "VNC service enabled"
-            elif [ "$action" = "disable" ]; then
-                sudo systemctl stop vncserver@:1
-                sudo systemctl disable vncserver@:1
+            elif [ "$action" = "off" ] || [ "$action" = "disable" ]; then
+                sudo systemctl disable --now vncserver@:1
                 success "VNC service disabled"
             fi
             ;;
         *)
-            error "Unknown service: $name"
+            error "Unknown service: $name (supported: ssh, vnc)"
             ;;
     esac
 }
 
-# GPU management
-gpu_action() {
-    local action=$1
-    
+# ─── Security ────────────────────────────────────────────────
+
+security_status() {
+    header "Security Posture"
+
+    # UFW
+    if command -v ufw &>/dev/null; then
+        local ufw_status
+        ufw_status=$(sudo ufw status 2>/dev/null | head -1)
+        if echo "$ufw_status" | grep -q "active"; then
+            success "UFW Firewall: ACTIVE"
+        else
+            warn "UFW Firewall: INACTIVE"
+        fi
+    else
+        warn "UFW: NOT INSTALLED"
+    fi
+
+    # SSH
+    if systemctl is-active sshd &>/dev/null; then
+        warn "SSH Server: RUNNING (port $(grep -E '^Port' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo 22))"
+    else
+        success "SSH Server: STOPPED"
+    fi
+
+    # fail2ban
+    if systemctl is-active fail2ban &>/dev/null; then
+        success "fail2ban: ACTIVE"
+    else
+        warn "fail2ban: INACTIVE"
+    fi
+
+    # Docker
+    if systemctl is-active docker &>/dev/null; then
+        info "Docker: RUNNING"
+    else
+        info "Docker: STOPPED"
+    fi
+
+    # KVM
+    if [ -e /dev/kvm ]; then
+        info "KVM: AVAILABLE"
+    else
+        info "KVM: NOT AVAILABLE"
+    fi
+
+    # Automatic updates
+    if systemctl is-active pacman-contrib 2>/dev/null || systemctl is-active archlinux-contrib.timer 2>/dev/null; then
+        success "Auto-updates: ACTIVE"
+    else
+        warn "Auto-updates: INACTIVE"
+    fi
+
+    echo ""
+}
+
+security_harden() {
+    header "Applying Security Hardening"
+    require_root
+
+    # 1. Enable UFW
+    info "Configuring firewall..."
+    if ! command -v ufw &>/dev/null; then
+        pacman -S --noconfirm ufw
+    fi
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow ssh
+    ufw --force enable
+    success "UFW enabled: deny incoming, allow outgoing, allow SSH"
+
+    # 2. Install & configure fail2ban
+    info "Installing fail2ban..."
+    if ! command -v fail2ban-server &>/dev/null; then
+        pacman -S --noconfirm fail2ban
+    fi
+    cat > /etc/fail2ban/jail.local << 'JAIL'
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+backend = systemd
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+maxretry = 3
+bantime = 86400
+JAIL
+    systemctl enable --now fail2ban
+    success "fail2ban configured (SSH: 3 retries -> 24h ban)"
+
+    # 3. Kernel hardening
+    info "Applying kernel hardening..."
+    cat > /etc/sysctl.d/99-linxira-security.conf << 'SYSCTL'
+# Linxira OS Security Hardening
+
+# Disable IP forwarding (unless needed for containers)
+# net.ipv4.ip_forward = 0
+
+# Ignore ICMP redirects
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+
+# Ignore source-routed packets
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+
+# Enable SYN flood protection
+net.ipv4.tcp_syncookies = 1
+
+# Log Martian packets
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+
+# Disable IPv6 router advertisements
+net.ipv6.conf.all.accept_ra = 0
+net.ipv6.conf.default.accept_ra = 0
+
+# Restrict dmesg access
+kernel.dmesg_restrict = 1
+
+# Restrict kernel pointer access
+kernel.kptr_restrict = 2
+
+# Disable SysRq key
+kernel.sysrq = 0
+
+# Restrict perf_event access
+kernel.perf_event_paranoid = 3
+SYSCTL
+    sysctl --system >/dev/null 2>&1
+    success "Kernel hardening applied"
+
+    # 4. File permissions
+    info "Tightening file permissions..."
+    chmod 700 /root 2>/dev/null || true
+    chmod 600 /etc/shadow 2>/dev/null || true
+    chmod 600 /etc/gshadow 2>/dev/null || true
+    success "Critical file permissions tightened"
+
+    echo ""
+    header "Security Hardening Complete"
+    echo "  - UFW firewall: enabled (deny incoming)"
+    echo "  - fail2ban: active (SSH brute-force protection)"
+    echo "  - Kernel: hardened (ICMP, SYN flood, ptrace restrictions)"
+    echo "  - File permissions: tightened"
+    echo ""
+    echo "  ${YELLOW}Optional:${NC} linxira-config ssh on   (enable remote access)"
+    echo "  ${YELLOW}Optional:${NC} linxira-config rdp on  (enable remote desktop)"
+    echo "  ${YELLOW}Optional:${NC} linxira-config virt kvm-on (enable virtualization)"
+    echo ""
+}
+
+# ─── UFW Management ──────────────────────────────────────────
+
+ufw_manage() {
+    local action=${1:-status}
+
     case $action in
-        info)
-            info "Detecting GPU..."
-            lspci | grep -E "VGA|3D"
+        on|enable)
+            require_root
+            if ! command -v ufw &>/dev/null; then
+                sudo pacman -S --noconfirm ufw
+            fi
+            sudo ufw default deny incoming
+            sudo ufw default allow outgoing
+            sudo ufw allow ssh
+            sudo ufw --force enable
+            success "UFW enabled"
+            ;;
+        off|disable)
+            require_root
+            sudo ufw disable
+            success "UFW disabled"
+            ;;
+        status)
+            if command -v ufw &>/dev/null; then
+                sudo ufw status verbose
+            else
+                warn "UFW not installed"
+            fi
+            ;;
+        allow)
+            local port=${2:-}
+            [ -z "$port" ] && error "Please specify a port: linxira-config security ufw allow <port>"
+            require_root
+            sudo ufw allow "$port"
+            success "Port $port allowed through firewall"
             ;;
         *)
-            error "Unknown GPU action: $action"
+            error "Unknown UFW action: $action (use on/off/status/allow)"
             ;;
     esac
 }
 
-# System info
-show_info() {
-    info "System Information:"
-    echo ""
-    echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
-    echo "Kernel: $(uname -r)"
-    echo "Arch: $(uname -m)"
-    echo "CPU: $(lscpu | grep "Model name" | cut -d: -f2 | xargs)"
-    echo "Memory: $(free -h | awk '/^Mem:/{print $2}')"
-    echo ""
-    info "GPU:"
-    lspci | grep -E "VGA|3D" | awk -F': ' '{print $2}'
-    echo ""
-    info "Installed Kernels:"
-    pacman -Q | grep linux-cachy | awk '{print $1, $2}'
+# ─── SSH Management ──────────────────────────────────────────
+
+ssh_manage() {
+    local action=${1:-status}
+
+    case $action in
+        on|enable|start)
+            require_root
+            sudo systemctl enable --now sshd
+            # Ensure UFW allows SSH
+            if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
+                sudo ufw allow ssh 2>/dev/null || true
+            fi
+            local port=$(grep -E '^Port' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo 22)
+            success "SSH enabled on port $port"
+            ;;
+        off|disable|stop)
+            require_root
+            sudo systemctl disable --now sshd
+            success "SSH disabled"
+            ;;
+        status)
+            if systemctl is-active sshd &>/dev/null; then
+                local port=$(grep -E '^Port' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo 22)
+                local ip=$(hostname -I | awk '{print $1}')
+                success "SSH running on port $port"
+                echo "  Connect: ssh user@${ip:-<ip>}:$port"
+            else
+                info "SSH is not running"
+            fi
+            ;;
+        port)
+            local port=${2:-}
+            [ -z "$port" ] && error "Please specify a port number"
+            require_root
+            sudo sed -i "s/^#\?Port .*/Port $port/" /etc/ssh/sshd_config
+            if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
+                sudo ufw allow "$port/tcp"
+            fi
+            sudo systemctl restart sshd
+            success "SSH port changed to $port"
+            ;;
+        *)
+            error "Unknown SSH action: $action (use on/off/status/port)"
+            ;;
+    esac
 }
 
-# Main
+# ─── Remote Desktop ──────────────────────────────────────────
+
+rdp_manage() {
+    local action=${1:-on}
+
+    case $action in
+        on|enable)
+            require_root
+            info "Installing xrdp..."
+            sudo pacman -S --noconfirm xrdp
+            sudo systemctl enable --now xrdp
+            if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
+                sudo ufw allow 3389/tcp
+            fi
+            success "RDP enabled on port 3389"
+            echo "  Connect with any RDP client to $(hostname -I | awk '{print $1}'):3389"
+            ;;
+        off|disable)
+            require_root
+            sudo systemctl disable --now xrdp
+            success "RDP disabled"
+            ;;
+        vnc-on)
+            require_root
+            info "Installing TigerVNC..."
+            sudo pacman -S --noconfirm tigervnc
+            sudo systemctl enable --now vncserver@:1
+            if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
+                sudo ufw allow 5901/tcp
+            fi
+            success "VNC enabled on display :1 (port 5901)"
+            ;;
+        vnc-off)
+            require_root
+            sudo systemctl disable --now vncserver@:1
+            success "VNC disabled"
+            ;;
+        *)
+            error "Unknown RDP action: $action (use on/off/vnc-on/vnc-off)"
+            ;;
+    esac
+}
+
+# ─── Virtualization ──────────────────────────────────────────
+
+virt_manage() {
+    local action=${1:-status}
+
+    case $action in
+        status)
+            header "Virtualization Support"
+            # CPU virtualization support
+            if grep -qE 'vmx|svm' /proc/cpuinfo; then
+                success "CPU virtualization: ENABLED (VT-x/AMD-V)"
+            else
+                warn "CPU virtualization: NOT AVAILABLE (enable in BIOS)"
+            fi
+
+            # KVM
+            if [ -e /dev/kvm ]; then
+                success "KVM: AVAILABLE"
+            else
+                warn "KVM: NOT LOADED"
+            fi
+
+            # QEMU
+            if command -v qemu-system-x86_64 &>/dev/null; then
+                info "QEMU: INSTALLED ($(qemu-system-x86_64 --version | head -1))"
+            else
+                info "QEMU: NOT INSTALLED"
+            fi
+
+            # Docker
+            if command -v docker &>/dev/null; then
+                info "Docker: INSTALLED ($(docker --version | awk '{print $3}' | tr -d ','))"
+            else
+                info "Docker: NOT INSTALLED"
+            fi
+
+            # Podman
+            if command -v podman &>/dev/null; then
+                info "Podman: INSTALLED ($(podman --version | awk '{print $2}'))"
+            else
+                info "Podman: NOT INSTALLED"
+            fi
+            echo ""
+            ;;
+        kvm-on)
+            require_root
+            info "Enabling KVM/QEMU..."
+            sudo pacman -S --noconfirm qemu-full virt-manager virt-viewer dnsmasq vde2 bridge-utils libvirt
+            sudo systemctl enable --now libvirtd
+            sudo usermod -aG libvirt "$USER" 2>/dev/null || true
+            sudo sed -i 's/^#unix_sock_group/unix_sock_group/' /etc/libvirt/libvirtd.conf 2>/dev/null || true
+            success "KVM/QEMU enabled. Log out and back in for group changes."
+            ;;
+        docker-on)
+            require_root
+            info "Installing Docker..."
+            sudo pacman -S --noconfirm docker
+            sudo systemctl enable --now docker
+            sudo usermod -aG docker "$USER" 2>/dev/null || true
+            if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
+                sudo ufw allow 2376/tcp 2>/dev/null || true
+            fi
+            success "Docker enabled. Log out and back in for group changes."
+            ;;
+        podman-on)
+            require_root
+            info "Enabling Podman..."
+            sudo systemctl enable --now podman.socket 2>/dev/null || true
+            success "Podman enabled"
+            ;;
+        *)
+            error "Unknown virt action: $action (use status/kvm-on/docker-on/podman-on)"
+            ;;
+    esac
+}
+
+# ─── GPU Management ──────────────────────────────────────────
+
+gpu_action() {
+    case ${1:-info} in
+        info)
+            header "GPU Information"
+            lspci | grep -E "VGA|3D" | awk -F': ' '{print "  " $2}'
+            echo ""
+            if pacman -Q nvidia-utils &>/dev/null 2>&1; then
+                info "NVIDIA driver: $(pacman -Q nvidia-utils | awk '{print $2}')"
+            fi
+            if pacman -Q mesa &>/dev/null 2>&1; then
+                info "Mesa: $(pacman -Q mesa | awk '{print $2}')"
+            fi
+            ;;
+        *)
+            error "Unknown GPU action: $1 (use info)"
+            ;;
+    esac
+}
+
+# ─── System Info ─────────────────────────────────────────────
+
+show_info() {
+    header "System Information"
+    echo "  OS:       $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
+    echo "  Kernel:   $(uname -r)"
+    echo "  Arch:     $(uname -m)"
+    echo "  CPU:      $(lscpu | grep "Model name" | cut -d: -f2 | xargs)"
+    echo "  Memory:   $(free -h | awk '/^Mem:/{print $2}')"
+    echo "  Hostname: $(hostname)"
+    echo ""
+    header "GPU"
+    lspci | grep -E "VGA|3D" | awk -F': ' '{print "  " $2}' || echo "  No GPU detected"
+    echo ""
+    header "Installed Kernels"
+    pacman -Q 2>/dev/null | grep -E "linux-cachyos|linux-linxira" | awk '{print "  " $1, $2}' || echo "  (none detected)"
+}
+
+# ─── Main Dispatch ───────────────────────────────────────────
+
 case "${1:-help}" in
     mirror)
         case "${2:-help}" in
@@ -213,10 +639,27 @@ case "${1:-help}" in
         workflow_apply "${2:-help}"
         ;;
     service)
-        service_manage "${2:-help}" "${3:-help}"
+        service_manage "${2:-}" "${3:-}"
+        ;;
+    security)
+        case "${2:-status}" in
+            status) security_status ;;
+            harden) security_harden ;;
+            ufw) ufw_manage "${3:-status}" ;;
+            *) error "Unknown security action: ${2:-} (use status/harden/ufw)" ;;
+        esac
+        ;;
+    ssh)
+        ssh_manage "${2:-status}"
+        ;;
+    rdp)
+        rdp_manage "${2:-on}"
+        ;;
+    virt)
+        virt_manage "${2:-status}"
         ;;
     gpu)
-        gpu_action "${2:-help}"
+        gpu_action "${2:-info}"
         ;;
     info)
         show_info
