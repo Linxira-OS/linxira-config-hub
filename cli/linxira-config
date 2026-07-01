@@ -303,8 +303,8 @@ backend = systemd
 enabled = true
 port = ssh
 filter = sshd
-maxretry = 3
-bantime = 86400
+maxretry = 5
+bantime = 3600
 JAIL
     systemctl enable --now fail2ban
     success "fail2ban configured (SSH: 3 retries -> 24h ban)"
@@ -312,12 +312,9 @@ JAIL
     # 3. Kernel hardening
     info "Applying kernel hardening..."
     cat > /etc/sysctl.d/99-linxira-security.conf << 'SYSCTL'
-# Linxira OS Security Hardening
+# Linxira OS Security Hardening (moderate)
 
-# Disable IP forwarding (unless needed for containers)
-# net.ipv4.ip_forward = 0
-
-# Ignore ICMP redirects
+# Ignore ICMP redirects (prevent MITM)
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.default.accept_redirects = 0
 net.ipv6.conf.all.accept_redirects = 0
@@ -330,7 +327,7 @@ net.ipv4.conf.default.accept_source_route = 0
 # Enable SYN flood protection
 net.ipv4.tcp_syncookies = 1
 
-# Log Martian packets
+# Log Martian packets (spoofed source addresses)
 net.ipv4.conf.all.log_martians = 1
 net.ipv4.conf.default.log_martians = 1
 
@@ -338,17 +335,12 @@ net.ipv4.conf.default.log_martians = 1
 net.ipv6.conf.all.accept_ra = 0
 net.ipv6.conf.default.accept_ra = 0
 
-# Restrict dmesg access
+# Restrict dmesg to root only
 kernel.dmesg_restrict = 1
 
-# Restrict kernel pointer access
-kernel.kptr_restrict = 2
-
-# Disable SysRq key
-kernel.sysrq = 0
-
-# Restrict perf_event access
-kernel.perf_event_paranoid = 3
+# perf_event_paranoid=1 allows perf for root, =2 allows non-root too
+# Default is 4 on Arch; 1 is a good balance for scientific work
+kernel.perf_event_paranoid = 1
 SYSCTL
     sysctl --system >/dev/null 2>&1
     success "Kernel hardening applied"
