@@ -46,6 +46,7 @@ ${BOLD}Commands:${NC}
   power <action>        Power management (sleep/suspend/hibernate)
   install <pkg>         Post-install software packages
   gpu <action>          GPU driver management
+  net <action>          Network diagnostics & fixes
   info                  Show system information
   help                  Show this help
 
@@ -84,6 +85,12 @@ ${BOLD}Power:${NC}
   linxira-config power noscreen        Disable screen blanking
   linxira-config power restore         Restore default power settings
 
+${BOLD}Network:${NC}
+  linxira-config net diag              Full network diagnostics
+  linxira-config net fix               Fix common network issues
+  linxira-config net dns               Show current DNS servers
+  linxira-config net dns set <ip>      Set DNS server (resolv.conf)
+
 ${BOLD}Install (post-install packages):${NC}
   linxira-config install bio           Bioinformatics tools
   linxira-config install science       Scientific computing
@@ -113,6 +120,8 @@ ${BOLD}Examples:${NC}
   linxira-config rdp on                # Enable remote desktop
   linxira-config virt kvm-on           # Enable KVM virtualization
   linxira-config workflow bio          # Install bioinformatics tools
+  linxira-config net diag              # Diagnose network issues
+  linxira-config net fix               # Fix common network problems
 EOF
 }
 
@@ -720,6 +729,192 @@ power_manage() {
     esac
 }
 
+# ─── Network Diagnostics ────────────────────────────────────
+
+net_diag() {
+    header "Network Diagnostics"
+
+    # NetworkManager status
+    header "NetworkManager"
+    if systemctl is-active NetworkManager &>/dev/null; then
+        success "NetworkManager: ACTIVE"
+        nmcli general status 2>/dev/null || true
+    else
+        warn "NetworkManager: INACTIVE"
+    fi
+
+    # systemd-networkd status
+    header "systemd-networkd"
+    if systemctl is-active systemd-networkd &>/dev/null; then
+        warn "systemd-networkd: ACTIVE (may conflict with NetworkManager)"
+    else
+        success "systemd-networkd: INACTIVE (expected when using NetworkManager)"
+    fi
+
+    # Network interfaces
+    header "Network Interfaces"
+    ip -br addr 2>/dev/null || ifconfig -a 2>/dev/null || true
+
+    # Default gateway
+    header "Default Gateway"
+    ip route show default 2>/dev/null || true
+
+    # DNS
+    header "DNS Servers"
+    if [ -f /etc/resolv.conf ]; then
+        grep -E '^nameserver' /etc/resolv.conf 2>/dev/null || warn "No nameservers in /etc/resolv.conf"
+    else
+        warn "/etc/resolv.conf not found"
+    fi
+    # Also show NetworkManager DNS
+    if command -v nmcli &>/dev/null && systemctl is-active NetworkManager &>/dev/null; then
+        echo ""
+        info "NetworkManager DNS (per connection):"
+        nmcli -f IP4.DNS con show 2>/dev/null | head -10 || true
+    fi
+
+    # DNS resolution test
+    header "DNS Resolution Test"
+    if host archlinux.org &>/dev/null; then
+        success "DNS resolution: OK (archlinux.org resolved)"
+    else
+        warn "DNS resolution: FAILED (cannot resolve archlinux.org)"
+    fi
+
+    # Ping tests
+    header "Connectivity Tests"
+    if ping -c 2 -W 3 8.8.8.8 &>/dev/null; then
+        success "Ping 8.8.8.8: OK"
+    else
+        warn "Ping 8.8.8.8: FAILED (no internet or ICMP blocked)"
+    fi
+    if ping -c 2 -W 3 archlinux.org &>/dev/null; then
+        success "Ping archlinux.org: OK"
+    else
+        warn "Ping archlinux.org: FAILED"
+    fi
+
+    # Firewall
+    header "Firewall"
+    if command -v ufw &>/dev/null; then
+        local ufw_status
+        ufw_status=$(sudo ufw status 2>/dev/null | head -1)
+        if echo "$ufw_status" | grep -q "active"; then
+            info "UFW: ACTIVE"
+        else
+            info "UFW: INACTIVE"
+        fi
+    elif command -v iptables &>/dev/null; then
+        local rule_count
+        rule_count=$(sudo iptables -L -n 2>/dev/null | grep -c "^Chain" || echo 0)
+        info "iptables: $rule_count chains active"
+    else
+        info "No firewall detected"
+    fi
+
+    echo ""
+}
+
+net_fix() {
+    header "Fixing Network Issues"
+    require_root
+
+    # Stop/mask systemd-networkd if NetworkManager is preferred
+    header "Checking systemd-networkd"
+    if systemctl is-active systemd-networkd &>/dev/null; then
+        info "Stopping systemd-networkd..."
+        sudo systemctl stop systemd-networkd
+        sudo systemctl disable systemd-networkd
+        sudo systemctl mask systemd-networkd
+        success "systemd-networkd stopped, disabled, and masked"
+    else
+        success "systemd-networkd already inactive"
+    fi
+
+    # Also mask systemd-resolved if using NetworkManager's DNS
+    if systemctl is-active systemd-resolved &>/dev/null; then
+        info "Stopping systemd-resolved..."
+        sudo systemctl stop systemd-resolved
+        sudo systemctl disable systemd-resolved
+        sudo systemctl mask systemd-resolved
+        success "systemd-resolved stopped and masked"
+    fi
+
+    # Restart NetworkManager
+    header "Restarting NetworkManager"
+    if systemctl is-active NetworkManager &>/dev/null; then
+        sudo systemctl restart NetworkManager
+        success "NetworkManager restarted"
+    else
+        info "NetworkManager not running, starting..."
+        sudo systemctl enable --now NetworkManager
+        success "NetworkManager enabled and started"
+    fi
+
+    # Fix DNS - ensure resolv.conf has working nameservers
+    header "Fixing DNS"
+    if ! grep -qE '^nameserver' /etc/resolv.conf 2>/dev/null; then
+        info "No nameservers found, adding defaults..."
+        echo -e "# Generated by linxira-config net fix\nnameserver 8.8.8.8\nnameserver 1.1.1.1" | sudo tee /etc/resolv.conf >/dev/null
+        success "DNS nameservers set: 8.8.8.8, 1.1.1.1"
+    else
+        success "DNS nameservers already configured"
+    fi
+
+    echo ""
+    success "Network fix complete. Run 'linxira-config net diag' to verify."
+}
+
+net_dns() {
+    local action=${1:-show}
+    local dns_ip=${2:-}
+
+    case $action in
+        show|status)
+            header "Current DNS Configuration"
+            if [ -f /etc/resolv.conf ]; then
+                grep -E '^nameserver' /etc/resolv.conf 2>/dev/null | while read -r line; do
+                    info "$line"
+                done
+            else
+                warn "/etc/resolv.conf not found"
+            fi
+            if command -v nmcli &>/dev/null && systemctl is-active NetworkManager &>/dev/null; then
+                echo ""
+                info "NetworkManager DNS per connection:"
+                nmcli -f NAME,IP4.DNS con show 2>/dev/null | grep -v "^NAME" | grep -v "^--" | head -10 || true
+            fi
+            echo ""
+            ;;
+        set|add)
+            [ -z "$dns_ip" ] && error "Please specify a DNS server IP: linxira-config net dns set <ip>"
+            require_root
+            # Remove existing nameservers and add the new one + fallback
+            if [ -f /etc/resolv.conf ]; then
+                sudo sed -i '/^nameserver/d' /etc/resolv.conf
+            fi
+            echo "nameserver $dns_ip" | sudo tee -a /etc/resolv.conf >/dev/null
+            # Add fallback if different
+            if [ "$dns_ip" != "8.8.8.8" ]; then
+                echo "nameserver 8.8.8.8" | sudo tee -a /etc/resolv.conf >/dev/null
+            fi
+            if [ "$dns_ip" != "1.1.1.1" ]; then
+                echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf >/dev/null
+            fi
+            success "DNS set to $dns_ip (with fallbacks)"
+            # Verify
+            if host archlinux.org &>/dev/null; then
+                success "DNS resolution test: PASSED"
+            else
+                warn "DNS resolution test: FAILED - check if $dns_ip is reachable"
+            fi
+            ;;
+        *)
+            error "Unknown DNS action: $action (use show/set)"
+            ;;
+    esac
+}
+
 # ─── Post-install Packages ──────────────────────────────────
 
 install_packages() {
@@ -890,6 +1085,14 @@ case "${1:-help}" in
         ;;
     gpu)
         gpu_action "${2:-info}"
+        ;;
+    net)
+        case "${2:-help}" in
+            diag) net_diag ;;
+            fix) net_fix ;;
+            dns) net_dns "${3:-show}" "${4:-}" ;;
+            *) error "Unknown net action: ${2:-} (use diag/fix/dns)" ;;
+        esac
         ;;
     info)
         show_info
