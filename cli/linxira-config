@@ -1,11 +1,12 @@
 #!/bin/bash
-# Linxira Config Hub - CLI Tool v2.0
+# Linxira Config Hub - CLI Tool v2.1
 # Cross-ecosource configuration & security manager
 
 set -euo pipefail
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v2.json}"
 
 # Colors
 RED='\033[0;31m'
@@ -92,27 +93,26 @@ ${BOLD}Network:${NC}
   linxira-config net dns set <ip>      Set DNS server (resolv.conf)
 
 ${BOLD}Install (post-install packages):${NC}
-  linxira-config install bio           Bioinformatics tools
-  linxira-config install science       Scientific computing
-  linxira-config install dev           Development tools
+  linxira-config install bioinformatics  Bioinformatics runtime
+  linxira-config install science         Scientific computing
+  linxira-config install developer       Development tools
   linxira-config install ai            AI/ML frameworks
-  linxira-config install office        Office suite + PDF
-  linxira-config install media         Media production
-  linxira-config install gaming        Gaming packages
-  linxira-config install docker        Docker engine
-  linxira-config install flatpak       Flatpak + Flathub
-  linxira-config install extras        Common extras (htop, neofetch, etc.)
+  linxira-config install productivity  Office, mail, and passwords
+  linxira-config install creator       Creative applications
+  linxira-config install containers    Rootless container tools
 
 ${BOLD}Mirror:${NC}
-  linxira-config mirror list           List available mirrors
-  linxira-config mirror speed         Test mirror speeds
-  linxira-config mirror set <mirror>   Set active mirror
+  linxira-config mirror <type> list          List Arch, npm, pip, or AUR sources
+  linxira-config mirror <type> speed [id]    Measure source latency
+  linxira-config mirror <type> set <id|url>  Select a source
+  linxira-config mirror <type> reset         Restore the official source
+  linxira-config mirror aur set <https-url>  Set a validated custom AUR Git mirror
 
 ${BOLD}Workflow:${NC}
   linxira-config workflow science      Scientific computing packages
-  linxira-config workflow dev          Development packages
+  linxira-config workflow developer    Development packages
   linxira-config workflow ai           AI/ML packages
-  linxira-config workflow bio          Bioinformatics packages
+  linxira-config workflow bioinformatics  Bioinformatics runtime
 
 ${BOLD}Examples:${NC}
   linxira-config security harden       # One-click security setup
@@ -127,90 +127,214 @@ EOF
 
 # ─── Mirror Management ───────────────────────────────────────
 
+mirror_records() {
+    case "$1" in
+        arch)
+            printf '%s\n' \
+                'official|Arch Linux geo mirror|https://geo.mirror.pkgbuild.com/$repo/os/$arch|https://geo.mirror.pkgbuild.com/core/os/x86_64/core.db' \
+                'tuna|Tsinghua TUNA|https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch|https://mirrors.tuna.tsinghua.edu.cn/archlinux/core/os/x86_64/core.db' \
+                'aliyun|Alibaba Cloud|https://mirrors.aliyun.com/archlinux/$repo/os/$arch|https://mirrors.aliyun.com/archlinux/core/os/x86_64/core.db' \
+                'ustc|USTC|https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch|https://mirrors.ustc.edu.cn/archlinux/core/os/x86_64/core.db'
+            ;;
+        npm)
+            printf '%s\n' \
+                'official|npm official|https://registry.npmjs.org/|https://registry.npmjs.org/npm' \
+                'npmmirror|npmmirror|https://registry.npmmirror.com/|https://registry.npmmirror.com/npm'
+            ;;
+        pip)
+            printf '%s\n' \
+                'official|PyPI official|https://pypi.org/simple|https://pypi.org/simple/pip/' \
+                'tuna|Tsinghua TUNA|https://pypi.tuna.tsinghua.edu.cn/simple|https://pypi.tuna.tsinghua.edu.cn/simple/pip/' \
+                'aliyun|Alibaba Cloud|https://mirrors.aliyun.com/pypi/simple|https://mirrors.aliyun.com/pypi/simple/pip/' \
+                'ustc|USTC|https://mirrors.ustc.edu.cn/pypi/simple|https://mirrors.ustc.edu.cn/pypi/simple/pip/'
+            ;;
+        aur)
+            printf '%s\n' \
+                'official|Arch User Repository|https://aur.archlinux.org|https://aur.archlinux.org/yay.git/info/refs?service=git-upload-pack'
+            ;;
+        *) error "Unknown mirror type: $1 (use arch/npm/pip/aur)" ;;
+    esac
+}
+
+mirror_resolve() {
+    local type=$1 selector=$2 id name url probe
+    if [[ $selector == https://* ]]; then
+        printf '%s|%s\n' "${selector%/}" "${selector%/}"
+        return
+    fi
+    while IFS='|' read -r id name url probe; do
+        if [[ $id == "$selector" ]]; then
+            printf '%s|%s\n' "$url" "$probe"
+            return
+        fi
+    done < <(mirror_records "$type")
+    error "Unknown $type source: $selector"
+}
+
+mirror_current() {
+    case "$1" in
+        arch) awk '/^[[:space:]]*Server[[:space:]]*=/{print $3; exit}' /etc/pacman.d/mirrorlist 2>/dev/null || true ;;
+        npm) command -v npm >/dev/null && npm config get registry 2>/dev/null || true ;;
+        pip) command -v python >/dev/null && python -m pip config get global.index-url 2>/dev/null || true ;;
+        aur)
+            if [[ -f ${XDG_CONFIG_HOME:-$HOME/.config}/linxira/aur-git-url ]]; then
+                cat -- "${XDG_CONFIG_HOME:-$HOME/.config}/linxira/aur-git-url"
+            else
+                printf '%s\n' 'https://aur.archlinux.org'
+            fi
+            ;;
+    esac
+}
+
 mirror_list() {
-    header "Available Mirrors"
-    echo "  1. China - Tsinghua University (TUNA)"
-    echo "  2. China - Alibaba Cloud"
-    echo "  3. China - USTC"
-    echo "  4. Global - Cloudflare"
-    echo "  5. Global - Fastly"
-    echo ""
+    local type=${1:-arch} id name url probe
+    header "${type^^} Sources"
+    while IFS='|' read -r id name url probe; do
+        printf '  %-10s %-22s %s\n' "$id" "$name" "$url"
+    done < <(mirror_records "$type")
+    if [[ $type == aur ]]; then
+        printf '  %-10s %-22s %s\n' custom 'Configured custom URL' "$(mirror_current aur)"
+        echo "  AUR source selection changes Git clone traffic only; RPC metadata stays official."
+    fi
+    echo "  Current: $(mirror_current "$type")"
+}
+
+mirror_probe() {
+    local probe=$1 result code seconds
+    result=$(curl --location --silent --show-error --output /dev/null \
+        --connect-timeout 4 --max-time 12 --retry 1 --retry-all-errors \
+        --write-out '%{http_code} %{time_total}' \
+        "$probe" 2>/dev/null) || return 1
+    read -r code seconds <<<"$result"
+    [[ $code =~ ^(2|3)[0-9][0-9]$ ]] || return 1
+    awk -v seconds="$seconds" 'BEGIN { printf "%.0f ms", seconds * 1000 }'
 }
 
 mirror_speed() {
-    header "Testing Mirror Speeds"
-    info "Testing Arch Linux mirrors..."
-    if command -v reflector &>/dev/null; then
-        sudo reflector --latest 5 --sort rate --protocol https --save /etc/pacman.d/mirrorlist
-        success "Mirror list updated with fastest mirrors"
-    else
-        warn "reflector not installed. Installing..."
-        sudo pacman -S --noconfirm reflector
-        sudo reflector --latest 5 --sort rate --protocol https --save /etc/pacman.d/mirrorlist
-        success "Mirror list updated with fastest mirrors"
+    local type=${1:-arch} selector=${2:-} id name url probe latency
+    command -v curl >/dev/null || error "curl is required for mirror testing"
+    header "Testing ${type^^} Sources"
+    while IFS='|' read -r id name url probe; do
+        [[ -z $selector || $id == "$selector" ]] || continue
+        if latency=$(mirror_probe "$probe"); then
+            printf '  %-10s %-22s %s\n' "$id" "$name" "$latency"
+        else
+            printf '  %-10s %-22s %s\n' "$id" "$name" 'unreachable'
+        fi
+    done < <(mirror_records "$type")
+    if [[ -n $selector && $selector == https://* ]]; then
+        probe=${selector%/}
+        [[ $type != aur ]] || probe="${selector%/}/yay.git/info/refs?service=git-upload-pack"
+        if latency=$(mirror_probe "$probe"); then
+            printf '  %-10s %-22s %s\n' custom 'Custom URL' "$latency"
+        else
+            error "The custom URL did not pass its connectivity check"
+        fi
+    fi
+}
+
+aur_set_git_url() {
+    local new_url=${1%/} state_dir state_file old_url
+    state_dir=${XDG_CONFIG_HOME:-$HOME/.config}/linxira
+    state_file=$state_dir/aur-git-url
+    old_url=$(mirror_current aur)
+    if [[ $old_url != https://aur.archlinux.org ]]; then
+        git config --global --unset-all "url.${old_url}/.insteadOf" 2>/dev/null || true
+    fi
+    mkdir -p "$state_dir"
+    printf '%s\n' "$new_url" >"$state_file"
+    if [[ $new_url != https://aur.archlinux.org ]]; then
+        git config --global --replace-all "url.${new_url}/.insteadOf" 'https://aur.archlinux.org/'
     fi
 }
 
 mirror_set() {
-    local mirror=$1
-    [ -z "$mirror" ] && error "Please specify a mirror number (1-5)"
-    info "Setting mirror to option $mirror..."
-    # TODO: Implement per-mirror mirrorlist generation
-    warn "Mirror preset selection not yet implemented"
+    local type=$1 selector=${2:-} resolved url probe latency
+    [[ -n $selector ]] || error "Specify a source ID or HTTPS URL"
+    resolved=$(mirror_resolve "$type" "$selector")
+    IFS='|' read -r url probe <<<"$resolved"
+    [[ $url == https://* ]] || error "Only HTTPS package sources are accepted"
+    command -v curl >/dev/null || error "curl is required for source validation"
+    if [[ $type == aur && $selector == https://* ]]; then
+        probe="${url}/yay.git/info/refs?service=git-upload-pack"
+    fi
+    latency=$(mirror_probe "$probe") || error "Source validation failed: $url"
+
+    case "$type" in
+        arch)
+            printf '# Generated by linxira-config\nServer = %s\n' "$url" | \
+                sudo tee /etc/pacman.d/mirrorlist >/dev/null
+            ;;
+        npm)
+            command -v npm >/dev/null || error "npm is not installed"
+            npm config set registry "$url" --location=user
+            ;;
+        pip)
+            command -v python >/dev/null || error "Python is not installed"
+            python -m pip config --user set global.index-url "$url"
+            ;;
+        aur)
+            command -v git >/dev/null || error "git is required for AUR source configuration"
+            aur_set_git_url "$url"
+            ;;
+    esac
+    success "${type^^} source set to $url ($latency)"
+}
+
+mirror_reset() {
+    mirror_set "$1" official
 }
 
 # ─── Source Management ───────────────────────────────────────
 
 source_list() {
     header "Package Sources"
-    echo "  1. CachyOS (official)"
-    echo "  2. CachyOS-V3 (x86-64-v3 optimized)"
-    echo "  3. CachyOS-V4 (x86-64-v4 optimized)"
-    echo "  4. Arch Linux (official)"
-    echo "  5. AUR (via paru)"
+    echo "  1. Arch Linux official repositories (enabled)"
+    echo "  2. Linxira signed repository (enabled when a trusted keyring is installed)"
+    echo "  3. AUR source builds (disabled by default; explicit user opt-in)"
+    echo "  4. Flatpak remotes (disabled by default)"
+    echo "  5. npm and PyPI indexes (per-user configuration)"
     echo ""
 }
 
 # ─── Workflow Templates ──────────────────────────────────────
 
+catalog_require() {
+    command -v jq >/dev/null || error "jq is required to read the Linxira catalog"
+    [[ -r $CATALOG_PATH ]] || error "Linxira catalog not found: $CATALOG_PATH"
+    jq -e '.catalogVersion == 2 and (.sources | type == "array") and (.profiles | type == "array")' \
+        "$CATALOG_PATH" >/dev/null || error "The Linxira catalog is invalid"
+}
+
+catalog_list_profiles() {
+    catalog_require
+    jq -r '.profiles[] | "  \(.id)\t\(.name.en)"' "$CATALOG_PATH"
+}
+
+catalog_profile_packages() {
+    local profile=$1
+    catalog_require
+    jq -er --arg profile "$profile" \
+        '[.profiles[] | select(.id == $profile and .source == "arch")][0].packages[]' \
+        "$CATALOG_PATH" 2>/dev/null || error "Unknown native profile: $profile"
+}
+
+install_catalog_profile() {
+    local profile=$1
+    local -a packages=()
+    mapfile -t packages < <(catalog_profile_packages "$profile")
+    ((${#packages[@]} > 0)) || error "Profile has no installable packages: $profile"
+    header "Installing Profile: $profile"
+    sudo pacman --sync --refresh --sysupgrade --needed --noconfirm -- "${packages[@]}"
+    success "Profile installed: $profile"
+}
+
 workflow_apply() {
     local name=$1
-    header "Applying Workflow: $name"
-
-    case $name in
-        science)
-            info "Installing scientific computing packages..."
-            sudo pacman -S --noconfirm --needed \
-                r octave gnuplot paraview \
-                texlive-bin texlive-core texlive-latexextra texlive-fontsextra texlive-pictures texlive-langchinese \
-                jupyterlab python numpy scipy matplotlib pandas
-            success "Scientific computing environment ready"
-            ;;
-        dev)
-            info "Installing development packages..."
-            sudo pacman -S --noconfirm --needed \
-                rust go nodejs typescript python cmake git \
-                neovim tmux docker podman distrobox
-            success "Development environment ready"
-            ;;
-        ai)
-            info "Installing AI/ML packages..."
-            sudo pacman -S --noconfirm --needed \
-                python python-pip cuda cudnn \
-                jupyterlab python-scikit-learn python-tensorflow python-pytorch
-            success "AI/ML environment ready"
-            ;;
-        bio)
-            info "Installing bioinformatics packages..."
-            sudo pacman -S --noconfirm --needed \
-                bwa samtools bedtools bcftools \
-                fastqc multiqc trimmomatic \
-                salmon hisat2 stringtie
-            success "Bioinformatics environment ready"
-            ;;
-        *)
-            error "Unknown workflow: $name"
-            ;;
+    case "$name" in
+        help|--help|-h) catalog_list_profiles ;;
+        bio) install_catalog_profile bioinformatics ;;
+        *) install_catalog_profile "$name" ;;
     esac
 }
 
@@ -919,106 +1043,10 @@ net_dns() {
 
 install_packages() {
     local category=${1:-}
-    [ -z "$category" ] && error "Please specify a category. Use: linxira-config install help"
-
-    header "Installing: $category"
-    require_root
-
-    case $category in
-        bio)
-            info "Installing bioinformatics tools..."
-            sudo pacman -S --noconfirm --needed \
-                bwa samtools bedtools bcftools \
-                fastqc multiqc trimmomatic spades \
-                salmon hisat2 stringtie \
-                igv minimap2 picard
-            success "Bioinformatics tools installed"
-            ;;
-        science)
-            info "Installing scientific computing packages..."
-            sudo pacman -S --noconfirm --needed \
-                r octave gnuplot paraview \
-                texlive-bin texlive-core texlive-latexextra texlive-fontsextra texlive-pictures texlive-langchinese \
-                jupyterlab python-numpy scipy matplotlib pandas
-            success "Scientific computing packages installed"
-            ;;
-        dev)
-            info "Installing development tools..."
-            sudo pacman -S --noconfirm --needed \
-                rust go nodejs typescript python python-pip \
-                cmake gcc make gdb strace valgrind \
-                neovim tmux
-            success "Development tools installed"
-            ;;
-        ai)
-            info "Installing AI/ML frameworks..."
-            sudo pacman -S --noconfirm --needed \
-                python-scikit-learn jupyterlab \
-                python-onnxruntime python-h5py
-            info "Note: PyTorch/TensorFlow use pip for CUDA support:"
-            info "  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121"
-            info "  pip install tensorflow"
-            success "AI/ML base packages installed"
-            ;;
-        office)
-            info "Installing office suite..."
-            sudo pacman -S --noconfirm --needed \
-                libreoffice-fresh hunspell-en \
-                evince zathura zathura-pdf-mupdf
-            success "Office packages installed"
-            ;;
-        media)
-            info "Installing media production..."
-            sudo pacman -S --noconfirm --needed \
-                gimp inkscape blender obs-studio \
-                ffmpeg mpv deadbeef
-            success "Media packages installed"
-            ;;
-        gaming)
-            info "Installing gaming packages..."
-            sudo pacman -S --noconfirm --needed \
-                steam lutris wine \
-                gamemode mangohud lib32-gamemode
-            success "Gaming packages installed"
-            ;;
-        docker)
-            info "Installing Docker..."
-            sudo pacman -S --noconfirm --needed docker docker-compose
-            sudo systemctl enable --now docker
-            sudo usermod -aG docker "$USER" 2>/dev/null || true
-            success "Docker installed and enabled"
-            ;;
-        flatpak)
-            info "Installing Flatpak..."
-            sudo pacman -S --noconfirm --needed flatpak
-            flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-            success "Flatpak + Flathub configured"
-            ;;
-        extras)
-            info "Installing common extras..."
-            sudo pacman -S --noconfirm --needed \
-                htop btop tmux neofetch fastfetch \
-                jq yq ripgrep fd fzf bat exa \
-                zip unzip unrar p7zip \
-                wget curl git lazygit
-            success "Extras installed"
-            ;;
-        help|--help|-h)
-            echo "Available categories:"
-            echo "  bio        Bioinformatics (BWA, SAMtools, Salmon, etc.)"
-            echo "  science    Scientific computing (R, Octave, gnuplot, texlive)"
-            echo "  dev        Development (Rust, Go, Node.js, Python, etc.)"
-            echo "  ai         AI/ML frameworks (scikit-learn, onnxruntime)"
-            echo "  office     Office suite (LibreOffice, PDF viewers)"
-            echo "  media      Media production (GIMP, Inkscape, OBS, ffmpeg)"
-            echo "  gaming     Gaming (Steam, Lutris, Wine, Gamemode)"
-            echo "  docker     Docker engine + Compose"
-            echo "  flatpak    Flatpak package manager + Flathub"
-            echo "  extras     Common utilities (htop, bat, fzf, ripgrep, etc.)"
-            ;;
-        *)
-            error "Unknown package category: $category (use 'help' for list)"
-            ;;
+    [[ -n $category ]] || error "Specify a profile. Use: linxira-config install help"
+    case "$category" in
+        help|--help|-h) catalog_list_profiles ;;
+        *) install_catalog_profile "$category" ;;
     esac
 }
 
@@ -1037,18 +1065,31 @@ show_info() {
     lspci | grep -E "VGA|3D" | awk -F': ' '{print "  " $2}' || echo "  No GPU detected"
     echo ""
     header "Installed Kernels"
-    pacman -Q 2>/dev/null | grep -E "linux-cachyos|linux-linxira" | awk '{print "  " $1, $2}' || echo "  (none detected)"
+    pacman -Q 2>/dev/null | awk '
+        $1 ~ /^linux(-lts|-zen|-hardened)?$/ { print "  " $1, $2; found=1 }
+        END { if (!found) print "  (none detected)" }
+    '
 }
 
 # ─── Main Dispatch ───────────────────────────────────────────
 
 case "${1:-help}" in
     mirror)
-        case "${2:-help}" in
-            list) mirror_list ;;
-            speed) mirror_speed ;;
-            set) mirror_set "${3:-}" ;;
-            *) show_help ;;
+        case "${2:-arch}" in
+            list) mirror_list arch ;;
+            speed) mirror_speed arch "${3:-}" ;;
+            set) mirror_set arch "${3:-}" ;;
+            reset) mirror_reset arch ;;
+            arch|npm|pip|aur)
+                case "${3:-list}" in
+                    list) mirror_list "$2" ;;
+                    speed) mirror_speed "$2" "${4:-}" ;;
+                    set) mirror_set "$2" "${4:-}" ;;
+                    reset) mirror_reset "$2" ;;
+                    *) error "Unknown mirror action: ${3:-} (use list/speed/set/reset)" ;;
+                esac
+                ;;
+            *) error "Unknown mirror type: ${2:-} (use arch/npm/pip/aur)" ;;
         esac
         ;;
     source)
