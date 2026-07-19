@@ -5,7 +5,9 @@ Configuration and diagnostics tools for Linxira OS.
 The current supported surface is `cli/linxira-config` for administrator-facing
 source, runtime and configuration management. Software installation is owned
 by `cli/linxira-software-center`, which reads catalog v2 and performs one
-allowlisted transaction after user confirmation. Its mirror commands cover
+allowlisted transaction through the root-only `linxira-components` backend
+after user confirmation. Config Hub does not expose software installation
+commands. Its mirror commands cover
 Arch, npm, PyPI, AUR, Go modules and explicitly enabled Flatpak remotes.
 
 ## Runtime contract

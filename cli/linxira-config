@@ -118,16 +118,6 @@ ${BOLD}Network:${NC}
   linxira-config net dns               Show current DNS servers
   linxira-config net dns set <ip>      Set DNS server (resolv.conf)
 
-${BOLD}Install (post-install packages):${NC}
-  linxira-config install applications <id...>  Install catalog applications
-  linxira-config install bioinformatics  Bioinformatics runtime
-  linxira-config install science         Scientific computing
-  linxira-config install developer       Development tools
-  linxira-config install ai            AI/ML frameworks
-  linxira-config install productivity  Office, mail, and passwords
-  linxira-config install creator       Creative applications
-  linxira-config install containers    Rootless container tools
-
 ${BOLD}Mirror:${NC}
   linxira-config mirror <type> list          List Arch, npm, pip, AUR, Flatpak, or Go sources
   linxira-config mirror <type> speed [id]    Measure source latency
@@ -142,12 +132,6 @@ ${BOLD}Miniforge:${NC}
   linxira-config conda channels add <id>   Add conda-forge or bioconda
   linxira-config conda channels remove <id> Remove an explicitly configured channel
   linxira-config conda channels reset      Remove configured channels
-
-${BOLD}Workflow:${NC}
-  linxira-config workflow science      Scientific computing packages
-  linxira-config workflow developer    Development packages
-  linxira-config workflow ai           AI/ML packages
-  linxira-config workflow bioinformatics  Bioinformatics runtime
 
 ${BOLD}Examples:${NC}
   linxira-config security harden       # One-click security setup
@@ -1305,7 +1289,7 @@ case "${1:-help}" in
         source_list
         ;;
     workflow)
-        workflow_apply "${2:-help}"
+        error "Software workflows are installed through Linxira Package Center"
         ;;
     service)
         service_manage "${2:-}" "${3:-}"
@@ -1331,8 +1315,7 @@ case "${1:-help}" in
         power_manage "${2:-status}"
         ;;
     install)
-        shift
-        install_packages "${1:-help}" "${@:2}"
+        error "Software installation is owned by Linxira Package Center"
         ;;
     gpu)
         gpu_action "${2:-info}"

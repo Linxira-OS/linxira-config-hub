@@ -13,9 +13,10 @@ class CatalogContractTests(unittest.TestCase):
         self.assertIn(".catalogVersion == 2", script)
         self.assertNotIn("catalog-v1.json", script)
 
-    def test_bio_alias_uses_the_reviewed_profile(self):
+    def test_cli_does_not_expose_software_installation(self):
         script = CLI.read_text(encoding="utf-8")
-        self.assertIn("bio) install_catalog_profile bioinformatics", script)
+        self.assertIn("Software installation is owned by Linxira Package Center", script)
+        self.assertNotIn("Install (post-install packages)", script)
 
     def test_kernel_report_only_matches_official_names(self):
         script = CLI.read_text(encoding="utf-8")
@@ -44,10 +45,12 @@ class CatalogContractTests(unittest.TestCase):
 
     def test_software_center_owns_the_install_transaction(self):
         script = SOFTWARE_CENTER.read_text(encoding="utf-8")
-        self.assertIn("pkexec pacman", script)
+        self.assertIn("linxira-components", script)
+        self.assertIn("plan_args+=(--application", script)
+        self.assertIn("pkexec \"$COMPONENTS_CLI\" apply", script)
         self.assertIn(".applications", script)
         self.assertNotIn("CONFIG_CLI", script)
-        self.assertNotIn("pkexec \"$CONFIG_CLI\"", script)
+        self.assertNotIn("pkexec pacman", script)
 
 
 if __name__ == "__main__":
