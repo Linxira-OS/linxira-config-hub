@@ -3,12 +3,10 @@
 set -euo pipefail
 
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v2.json}"
-CONFIG_CLI="${LINXIRA_CONFIG_CLI:-/usr/local/bin/linxira-config}"
 
 command -v kdialog >/dev/null || { printf '%s\n' 'kdialog is required.' >&2; exit 1; }
 command -v jq >/dev/null || { kdialog --error 'jq is required to read the Linxira catalog.'; exit 1; }
 [[ -r "$CATALOG_PATH" ]] || { kdialog --error "Catalog not found: $CATALOG_PATH"; exit 1; }
-[[ -x "$CONFIG_CLI" ]] || { kdialog --error "Config CLI not found: $CONFIG_CLI"; exit 1; }
 
 mapfile -t entries < <(jq -r '
     (.categories | map({key: .id, value: .name.zh_CN}) | from_entries) as $names
@@ -28,11 +26,26 @@ done
 selected=$(kdialog --title 'Linxira 软件中心' --checklist '选择要安装的软件工作流：' "${choices[@]}" 2>/dev/null) || exit 0
 selected=${selected//\"/}
 [[ -n "$selected" ]] || exit 0
-read -r -a profiles <<<"$selected"
+read -r -a applications <<<"$selected"
 
-summary=$(printf '%s\n' "${profiles[@]}" | paste -sd ', ' -)
+packages=$(printf '%s\n' "${applications[@]}" | jq -R -s --argjson catalog "$(<"$CATALOG_PATH")" '
+    split("\\n")
+    | map(select(length > 0))
+    | . as $ids
+    | ($catalog.applications | map(select(.installer == true and .source == "arch" and (.id as $id | $ids | index($id))))
+       | {ids: map(.id), packages: (map(.packages[]) | unique)})
+    | select(.ids | length == ($ids | length))
+    | .packages[]
+' 2>/dev/null) || {
+    kdialog --title '安装失败' --error 'Catalog application selection is invalid.'
+    exit 1
+}
+[[ -n "$packages" ]] || { kdialog --error 'No installable applications were selected.'; exit 1; }
+
+summary=$(printf '%s\n' "${applications[@]}" | paste -sd ', ' -)
 kdialog --warningyesno "将安装以下 Linxira 软件工作流：\n\n$summary\n\n需要管理员授权，是否继续？" || exit 0
-if ! output=$(pkexec "$CONFIG_CLI" install applications "${profiles[@]}" 2>&1); then
+mapfile -t package_list <<<"$packages"
+if ! output=$(pkexec pacman --sync --refresh --needed --noconfirm -- "${package_list[@]}" 2>&1); then
     kdialog --title '安装失败' --error "$output"
     exit 1
 fi

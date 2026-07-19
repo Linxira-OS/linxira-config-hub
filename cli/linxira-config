@@ -129,12 +129,19 @@ ${BOLD}Install (post-install packages):${NC}
   linxira-config install containers    Rootless container tools
 
 ${BOLD}Mirror:${NC}
-  linxira-config mirror <type> list          List Arch, npm, pip, AUR, or Flatpak sources
+  linxira-config mirror <type> list          List Arch, npm, pip, AUR, Flatpak, or Go sources
   linxira-config mirror <type> speed [id]    Measure source latency
   linxira-config mirror <type> set <id|url>  Select a source
   linxira-config mirror <type> reset         Restore the official source
   linxira-config mirror aur set <https-url>  Set a validated custom AUR Git mirror
   linxira-config mirror flatpak set <id|url> Configure an explicit Flatpak remote
+  linxira-config mirror go set <id|url>      Configure the Go module proxy
+
+${BOLD}Miniforge:${NC}
+  linxira-config conda channels list       Show configured Miniforge channels
+  linxira-config conda channels add <id>   Add conda-forge or bioconda
+  linxira-config conda channels remove <id> Remove an explicitly configured channel
+  linxira-config conda channels reset      Remove configured channels
 
 ${BOLD}Workflow:${NC}
   linxira-config workflow science      Scientific computing packages
@@ -184,7 +191,12 @@ mirror_records() {
             printf '%s\n' \
                 'flathub|Flathub|https://flathub.org/repo/flathub.flatpakrepo|https://flathub.org/repo/flathub.flatpakrepo'
             ;;
-        *) error "Unknown mirror type: $1 (use arch/npm/pip/aur/flatpak)" ;;
+        go)
+            printf '%s\n' \
+                'official|Go proxy official|https://proxy.golang.org|https://proxy.golang.org/github.com/golang/example/@v/list' \
+                'goproxy-cn|goproxy.cn|https://goproxy.cn|https://goproxy.cn/github.com/golang/example/@v/list'
+            ;;
+        *) error "Unknown mirror type: $1 (use arch/npm/pip/aur/flatpak/go)" ;;
     esac
 }
 
@@ -219,6 +231,9 @@ mirror_current() {
             command -v flatpak >/dev/null && \
                 flatpak remotes --user --columns=name,url 2>/dev/null | \
                 awk '$1 == "flathub" { print $2; exit }' || true
+            ;;
+        go)
+            command -v go >/dev/null && go env GOPROXY 2>/dev/null || true
             ;;
     esac
 }
@@ -321,12 +336,97 @@ mirror_set() {
             flatpak remote-modify --user --url="$url" flathub 2>/dev/null || \
                 flatpak remote-add --user flathub "$url"
             ;;
+        go)
+            command -v go >/dev/null || error "Go is not installed"
+            go env -w "GOPROXY=${url},direct"
+            ;;
     esac
     success "${type^^} source set to $url ($latency)"
 }
 
 mirror_reset() {
     mirror_set "$1" official
+}
+
+# ─── Miniforge Channels ───────────────────────────────────────
+
+miniforge_root() {
+    local root
+    command -v conda >/dev/null || return 1
+    root=$(conda info --base 2>/dev/null) || return 1
+    case "${root##*/}" in
+        miniforge*|mambaforge*) printf '%s\n' "$root" ;;
+        *) return 1 ;;
+    esac
+}
+
+require_miniforge() {
+    miniforge_root >/dev/null || error "Miniforge is not installed; refusing to configure a generic Conda distribution"
+}
+
+conda_channel_records() {
+    printf '%s\n' \
+        'conda-forge|conda-forge|https://conda.anaconda.org/conda-forge' \
+        'bioconda|Bioconda|https://conda.anaconda.org/bioconda'
+}
+
+conda_channel_resolve() {
+    local selector=$1 id name url
+    while IFS='|' read -r id name url; do
+        [[ $id == "$selector" ]] && { printf '%s|%s\n' "$id" "$url"; return; }
+    done < <(conda_channel_records)
+    error "Unknown Miniforge channel: $selector (use conda-forge or bioconda)"
+}
+
+conda_channels_list() {
+    require_miniforge
+    header "Miniforge Channels"
+    while IFS='|' read -r id name url; do
+        printf '  %-12s %-14s %s\n' "$id" "$name" "$url"
+    done < <(conda_channel_records)
+    echo ""
+    conda config --show channels 2>/dev/null || true
+    echo "  channel_priority:"
+    conda config --show channel_priority 2>/dev/null | sed 's/^/  /' || true
+}
+
+conda_channels_add() {
+    local selector=${1:-} channel
+    require_miniforge
+    channel=$(conda_channel_resolve "$selector" | cut -d'|' -f1)
+    conda config --add channels "$channel"
+    conda config --set channel_priority strict
+    success "Miniforge channel enabled: $channel"
+}
+
+conda_channels_remove() {
+    local selector=${1:-} channel
+    require_miniforge
+    channel=$(conda_channel_resolve "$selector" | cut -d'|' -f1)
+    conda config --remove channels "$channel" || true
+    success "Miniforge channel removed: $channel"
+}
+
+conda_channels_reset() {
+    require_miniforge
+    conda config --remove-key channels || true
+    conda config --remove-key channel_priority || true
+    success "Miniforge channels reset"
+}
+
+conda_manage() {
+    case "${1:-channels}" in
+        channels)
+            case "${2:-list}" in
+                list) conda_channels_list ;;
+                add) conda_channels_add "${3:-}" ;;
+                remove) conda_channels_remove "${3:-}" ;;
+                reset) conda_channels_reset ;;
+                *) error "Unknown channel action: ${2:-} (use list/add/remove/reset)" ;;
+            esac
+            ;;
+        *) error "Unknown Miniforge action: ${1:-} (use channels)" ;;
+    esac
 }
 
 # ─── Source Management ───────────────────────────────────────
@@ -1165,13 +1265,18 @@ show_info() {
 runtime_status() {
     local tool
     header "Runtime And Package Managers"
-    for tool in pacman paru nix python uv node npm rustc cargo go conda mamba apptainer podman; do
+    for tool in pacman paru nix python uv node npm rustc cargo go apptainer podman; do
         if command -v "$tool" >/dev/null 2>&1; then
             printf '  %-12s installed (%s)\n' "$tool" "$(command -v "$tool")"
         else
             printf '  %-12s unavailable\n' "$tool"
         fi
     done
+    if root=$(miniforge_root); then
+        printf '  %-12s installed (%s)\n' miniforge "$root"
+    else
+        printf '  %-12s unavailable\n' miniforge
+    fi
     printf '  %-12s unresolved (no verified package or implementation)\n' wise
 }
 
@@ -1184,7 +1289,7 @@ case "${1:-help}" in
             speed) mirror_speed arch "${3:-}" ;;
             set) mirror_set arch "${3:-}" ;;
             reset) mirror_reset arch ;;
-            arch|npm|pip|aur|flatpak)
+            arch|npm|pip|aur|flatpak|go)
                 case "${3:-list}" in
                     list) mirror_list "$2" ;;
                     speed) mirror_speed "$2" "${4:-}" ;;
@@ -1193,7 +1298,7 @@ case "${1:-help}" in
                     *) error "Unknown mirror action: ${3:-} (use list/speed/set/reset)" ;;
                 esac
                 ;;
-            *) error "Unknown mirror type: ${2:-} (use arch/npm/pip/aur/flatpak)" ;;
+            *) error "Unknown mirror type: ${2:-} (use arch/npm/pip/aur/flatpak/go)" ;;
         esac
         ;;
     source)
@@ -1248,6 +1353,9 @@ case "${1:-help}" in
             status) runtime_status ;;
             *) error "Unknown runtime action: ${2:-} (use status)" ;;
         esac
+        ;;
+    conda)
+        conda_manage "${2:-channels}" "${3:-list}" "${4:-}"
         ;;
     help|--help|-h)
         show_help
