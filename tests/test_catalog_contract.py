@@ -21,6 +21,12 @@ class CatalogContractTests(unittest.TestCase):
         self.assertIn("/^linux(-lts|-zen|-hardened)?$/", script)
         self.assertNotIn("linux-cachyos|linux-linxira", script)
 
+    def test_config_cli_exposes_explicit_flatpak_remote_management(self):
+        script = CLI.read_text(encoding="utf-8")
+        self.assertIn("flatpak)", script)
+        self.assertIn("flatpak remote-modify", script)
+        self.assertIn("mirror flatpak", script)
+
 
 if __name__ == "__main__":
     unittest.main()

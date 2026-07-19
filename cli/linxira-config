@@ -129,11 +129,12 @@ ${BOLD}Install (post-install packages):${NC}
   linxira-config install containers    Rootless container tools
 
 ${BOLD}Mirror:${NC}
-  linxira-config mirror <type> list          List Arch, npm, pip, or AUR sources
+  linxira-config mirror <type> list          List Arch, npm, pip, AUR, or Flatpak sources
   linxira-config mirror <type> speed [id]    Measure source latency
   linxira-config mirror <type> set <id|url>  Select a source
   linxira-config mirror <type> reset         Restore the official source
   linxira-config mirror aur set <https-url>  Set a validated custom AUR Git mirror
+  linxira-config mirror flatpak set <id|url> Configure an explicit Flatpak remote
 
 ${BOLD}Workflow:${NC}
   linxira-config workflow science      Scientific computing packages
@@ -179,7 +180,11 @@ mirror_records() {
             printf '%s\n' \
                 'official|Arch User Repository|https://aur.archlinux.org|https://aur.archlinux.org/yay.git/info/refs?service=git-upload-pack'
             ;;
-        *) error "Unknown mirror type: $1 (use arch/npm/pip/aur)" ;;
+        flatpak)
+            printf '%s\n' \
+                'flathub|Flathub|https://flathub.org/repo/flathub.flatpakrepo|https://flathub.org/repo/flathub.flatpakrepo'
+            ;;
+        *) error "Unknown mirror type: $1 (use arch/npm/pip/aur/flatpak)" ;;
     esac
 }
 
@@ -210,6 +215,11 @@ mirror_current() {
                 printf '%s\n' 'https://aur.archlinux.org'
             fi
             ;;
+        flatpak)
+            command -v flatpak >/dev/null && \
+                flatpak remotes --user --columns=name,url 2>/dev/null | \
+                awk '$1 == "flathub" { print $2; exit }' || true
+            ;;
     esac
 }
 
@@ -222,6 +232,8 @@ mirror_list() {
     if [[ $type == aur ]]; then
         printf '  %-10s %-22s %s\n' custom 'Configured custom URL' "$(mirror_current aur)"
         echo "  AUR source selection changes Git clone traffic only; RPC metadata stays official."
+    elif [[ $type == flatpak ]]; then
+        echo "  Flatpak remotes are unchanged until an explicit 'set' command is run."
     fi
     echo "  Current: $(mirror_current "$type")"
 }
@@ -303,6 +315,11 @@ mirror_set() {
         aur)
             command -v git >/dev/null || error "git is required for AUR source configuration"
             aur_set_git_url "$url"
+            ;;
+        flatpak)
+            command -v flatpak >/dev/null || error "flatpak is not installed"
+            flatpak remote-modify --user --url="$url" flathub 2>/dev/null || \
+                flatpak remote-add --user flathub "$url"
             ;;
     esac
     success "${type^^} source set to $url ($latency)"
@@ -1167,7 +1184,7 @@ case "${1:-help}" in
             speed) mirror_speed arch "${3:-}" ;;
             set) mirror_set arch "${3:-}" ;;
             reset) mirror_reset arch ;;
-            arch|npm|pip|aur)
+            arch|npm|pip|aur|flatpak)
                 case "${3:-list}" in
                     list) mirror_list "$2" ;;
                     speed) mirror_speed "$2" "${4:-}" ;;
@@ -1176,7 +1193,7 @@ case "${1:-help}" in
                     *) error "Unknown mirror action: ${3:-} (use list/speed/set/reset)" ;;
                 esac
                 ;;
-            *) error "Unknown mirror type: ${2:-} (use arch/npm/pip/aur)" ;;
+            *) error "Unknown mirror type: ${2:-} (use arch/npm/pip/aur/flatpak)" ;;
         esac
         ;;
     source)

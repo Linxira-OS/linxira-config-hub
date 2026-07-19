@@ -3,8 +3,9 @@
 Configuration and diagnostics tools for Linxira OS.
 
 The current supported surface is `cli/linxira-config`. Its workflow commands
-read reviewed native profiles from catalog v2 and install only package names
-declared by an Arch-source profile.
+read reviewed native profiles and applications from catalog v2 and install only
+package names declared by an Arch-source entry. Its mirror commands cover
+Arch, npm, PyPI, AUR and explicitly enabled Flatpak remotes.
 
 ## Runtime contract
 
@@ -15,3 +16,6 @@ declared by an Arch-source profile.
 
 Set `LINXIRA_CATALOG_PATH` to validate the CLI against a catalog outside an
 installed Linxira system.
+
+Flatpak remotes remain disabled by default. `mirror flatpak set flathub` is an
+explicit opt-in operation and requires the `flatpak` client.
