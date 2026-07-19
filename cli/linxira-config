@@ -27,6 +27,31 @@ require_root() {
     [ "$(id -u)" -eq 0 ] || error "This command requires root privileges. Use sudo."
 }
 
+validate_port() {
+    local port=$1
+    [[ $port =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)) || \
+        error "Invalid port: $port (use a number from 1 to 65535)"
+}
+
+validate_dns_server() {
+    local server=$1
+    [[ $server =~ ^[0-9A-Fa-f:.]+$ ]] || error "Invalid DNS server address: $server"
+    [[ $server != *[[:space:]/]* ]] || error "Invalid DNS server address: $server"
+}
+
+target_user() {
+    local uid=${PKEXEC_UID:-}
+    if [[ $uid =~ ^[0-9]+$ ]] && ((uid > 0)); then
+        getent passwd "$uid" | cut -d: -f1
+    elif [[ -n ${SUDO_USER:-} && ${SUDO_USER} != root ]]; then
+        printf '%s\n' "$SUDO_USER"
+    elif [[ ${USER:-} != root ]]; then
+        printf '%s\n' "$USER"
+    else
+        logname 2>/dev/null || true
+    fi
+}
+
 # ─── Help ────────────────────────────────────────────────────
 
 show_help() {
@@ -46,6 +71,7 @@ ${BOLD}Commands:${NC}
   virt <action>         Virtualization (KVM/QEMU/Docker)
   power <action>        Power management (sleep/suspend/hibernate)
   install <pkg>         Post-install software packages
+  runtime <action>       Runtime and package-manager status
   gpu <action>          GPU driver management
   net <action>          Network diagnostics & fixes
   info                  Show system information
@@ -68,9 +94,9 @@ ${BOLD}SSH:${NC}
   linxira-config ssh keyshow           Show public key for copying
 
 ${BOLD}Remote Desktop:${NC}
-  linxira-config rdp on                Install & enable RDP (xrdp)
+  linxira-config rdp on                RDP status (enablement pending signed xrdp)
   linxira-config rdp off               Disable RDP
-  linxira-config rdp vnc-on            Install & enable VNC
+  linxira-config rdp vnc-on            VNC status (enablement pending session policy)
   linxira-config rdp vnc-off           Disable VNC
 
 ${BOLD}Virtualization:${NC}
@@ -93,6 +119,7 @@ ${BOLD}Network:${NC}
   linxira-config net dns set <ip>      Set DNS server (resolv.conf)
 
 ${BOLD}Install (post-install packages):${NC}
+  linxira-config install applications <id...>  Install catalog applications
   linxira-config install bioinformatics  Bioinformatics runtime
   linxira-config install science         Scientific computing
   linxira-config install developer       Development tools
@@ -294,6 +321,8 @@ source_list() {
     echo "  3. AUR source builds (disabled by default; explicit user opt-in)"
     echo "  4. Flatpak remotes (disabled by default)"
     echo "  5. npm and PyPI indexes (per-user configuration)"
+    echo "  6. Runtime managers: Nix, uv, npm, Cargo, Go modules, Conda (opt-in)"
+    echo "  7. WISE: not installed; no verified package or implementation is present"
     echo ""
 }
 
@@ -311,6 +340,11 @@ catalog_list_profiles() {
     jq -r '.profiles[] | "  \(.id)\t\(.name.en)"' "$CATALOG_PATH"
 }
 
+catalog_list_applications() {
+    catalog_require
+    jq -r '.applications[] | "  \(.id)\t\(.name.en)"' "$CATALOG_PATH"
+}
+
 catalog_profile_packages() {
     local profile=$1
     catalog_require
@@ -319,14 +353,54 @@ catalog_profile_packages() {
         "$CATALOG_PATH" 2>/dev/null || error "Unknown native profile: $profile"
 }
 
+catalog_application_packages() {
+    local application=$1
+    catalog_require
+    jq -er --arg application "$application" \
+        '[.applications[] | select(.id == $application and .source == "arch" and .installer == true)][0].packages[]' \
+        "$CATALOG_PATH" 2>/dev/null || error "Unknown native application: $application"
+}
+
 install_catalog_profile() {
-    local profile=$1
+    install_catalog_profiles "$1"
+}
+
+install_catalog_profiles() {
+    local profile packages_file profile_name
     local -a packages=()
-    mapfile -t packages < <(catalog_profile_packages "$profile")
-    ((${#packages[@]} > 0)) || error "Profile has no installable packages: $profile"
-    header "Installing Profile: $profile"
-    sudo pacman --sync --refresh --sysupgrade --needed --noconfirm -- "${packages[@]}"
-    success "Profile installed: $profile"
+    ((${#@} > 0)) || error "Specify at least one profile"
+    packages_file=$(mktemp)
+    trap 'rm -f -- "$packages_file"' RETURN
+    for profile_name in "$@"; do
+        mapfile -t profile_packages < <(catalog_profile_packages "$profile_name")
+        ((${#profile_packages[@]} > 0)) || error "Profile has no installable packages: $profile_name"
+        printf '%s\n' "${profile_packages[@]}" >>"$packages_file"
+    done
+    mapfile -t packages < <(sort -u "$packages_file")
+    header "Installing Profiles: $*"
+    sudo pacman --sync --refresh --needed --noconfirm -- "${packages[@]}"
+    for profile in "$@"; do
+        success "Profile installed: $profile"
+    done
+}
+
+install_catalog_applications() {
+    local applications_file application_name
+    local -a packages=()
+    ((${#@} > 0)) || error "Specify at least one application"
+    applications_file=$(mktemp)
+    trap 'rm -f -- "$applications_file"' RETURN
+    for application_name in "$@"; do
+        mapfile -t application_packages < <(catalog_application_packages "$application_name")
+        ((${#application_packages[@]} > 0)) || error "Application has no installable packages: $application_name"
+        printf '%s\n' "${application_packages[@]}" >>"$applications_file"
+    done
+    mapfile -t packages < <(sort -u "$applications_file")
+    header "Installing Applications: $*"
+    sudo pacman --sync --refresh --needed --noconfirm -- "${packages[@]}"
+    for application_name in "$@"; do
+        success "Application installed: $application_name"
+    done
 }
 
 workflow_apply() {
@@ -358,9 +432,8 @@ service_manage() {
             ;;
         vnc)
             if [ "$action" = "on" ] || [ "$action" = "enable" ]; then
-                sudo pacman -S --noconfirm tigervnc
-                sudo systemctl enable --now vncserver@:1
-                success "VNC service enabled"
+                require_root
+                error "VNC is not available: a per-user TigerVNC session and firewall policy must be implemented first"
             elif [ "$action" = "off" ] || [ "$action" = "disable" ]; then
                 sudo systemctl disable --now vncserver@:1
                 success "VNC service disabled"
@@ -553,6 +626,7 @@ ufw_manage() {
         allow)
             local port=${2:-}
             [ -z "$port" ] && error "Please specify a port: linxira-config security ufw allow <port>"
+            validate_port "$port"
             require_root
             sudo ufw allow "$port"
             success "Port $port allowed through firewall"
@@ -597,6 +671,7 @@ ssh_manage() {
         port)
             local port=${2:-}
             [ -z "$port" ] && error "Please specify a port number"
+            validate_port "$port"
             require_root
             sudo sed -i "s/^#\?Port .*/Port $port/" /etc/ssh/sshd_config
             if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
@@ -643,14 +718,7 @@ rdp_manage() {
     case $action in
         on|enable)
             require_root
-            info "Installing xrdp..."
-            sudo pacman -S --noconfirm xrdp
-            sudo systemctl enable --now xrdp
-            if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
-                sudo ufw allow 3389/tcp
-            fi
-            success "RDP enabled on port 3389"
-            echo "  Connect with any RDP client to $(hostname -I | awk '{print $1}'):3389"
+            error "RDP is not available: xrdp is not present in Linxira's signed repositories"
             ;;
         off|disable)
             require_root
@@ -659,13 +727,7 @@ rdp_manage() {
             ;;
         vnc-on)
             require_root
-            info "Installing TigerVNC..."
-            sudo pacman -S --noconfirm tigervnc
-            sudo systemctl enable --now vncserver@:1
-            if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
-                sudo ufw allow 5901/tcp
-            fi
-            success "VNC enabled on display :1 (port 5901)"
+            error "VNC is not available: a per-user TigerVNC session and firewall policy must be implemented first"
             ;;
         vnc-off)
             require_root
@@ -727,7 +789,8 @@ virt_manage() {
             info "Enabling KVM/QEMU..."
             sudo pacman -S --noconfirm qemu-full virt-manager virt-viewer dnsmasq vde2 bridge-utils libvirt
             sudo systemctl enable --now libvirtd
-            sudo usermod -aG libvirt "$USER" 2>/dev/null || true
+            user=$(target_user)
+            [[ -n $user ]] && sudo usermod -aG libvirt "$user" 2>/dev/null || true
             sudo sed -i 's/^#unix_sock_group/unix_sock_group/' /etc/libvirt/libvirtd.conf 2>/dev/null || true
             success "KVM/QEMU enabled. Log out and back in for group changes."
             ;;
@@ -736,7 +799,8 @@ virt_manage() {
             info "Installing Docker..."
             sudo pacman -S --noconfirm docker
             sudo systemctl enable --now docker
-            sudo usermod -aG docker "$USER" 2>/dev/null || true
+            user=$(target_user)
+            [[ -n $user ]] && sudo usermod -aG docker "$user" 2>/dev/null || true
             if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
                 sudo ufw allow 2376/tcp 2>/dev/null || true
             fi
@@ -829,9 +893,13 @@ power_manage() {
             require_root
             info "Disabling screen blanking..."
             # KDE/Plasma
-            if command -v kwriteconfig5 &>/dev/null; then
-                kwriteconfig5 --file kscreenlockerrc --group Daemon --key Autolock false
-                kwriteconfig5 --file kscreenlockerrc --group Daemon --key Timeout 0
+            local user home kwrite
+            user=$(target_user)
+            home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6 || true)
+            kwrite=$(command -v kwriteconfig6 || command -v kwriteconfig5 || true)
+            if [[ -n $kwrite && -n $user && -n $home ]]; then
+                sudo -u "$user" env HOME="$home" "$kwrite" --file kscreenlockerrc --group Daemon --key Autolock false
+                sudo -u "$user" env HOME="$home" "$kwrite" --file kscreenlockerrc --group Daemon --key Timeout 0
             fi
             # SDDM
             sudo mkdir -p /etc/sddm.conf.d
@@ -1012,6 +1080,7 @@ net_dns() {
             ;;
         set|add)
             [ -z "$dns_ip" ] && error "Please specify a DNS server IP: linxira-config net dns set <ip>"
+            validate_dns_server "$dns_ip"
             require_root
             # Remove existing nameservers and add the new one + fallback
             if [ -f /etc/resolv.conf ]; then
@@ -1046,7 +1115,12 @@ install_packages() {
     [[ -n $category ]] || error "Specify a profile. Use: linxira-config install help"
     case "$category" in
         help|--help|-h) catalog_list_profiles ;;
-        *) install_catalog_profile "$category" ;;
+        app|application|applications)
+            shift
+            ((${#@} > 0)) || { catalog_list_applications; return; }
+            install_catalog_applications "$@"
+            ;;
+        *) shift; install_catalog_profiles "$category" "$@" ;;
     esac
 }
 
@@ -1069,6 +1143,19 @@ show_info() {
         $1 ~ /^linux(-lts|-zen|-hardened)?$/ { print "  " $1, $2; found=1 }
         END { if (!found) print "  (none detected)" }
     '
+}
+
+runtime_status() {
+    local tool
+    header "Runtime And Package Managers"
+    for tool in pacman paru nix python uv node npm rustc cargo go conda mamba apptainer podman; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            printf '  %-12s installed (%s)\n' "$tool" "$(command -v "$tool")"
+        else
+            printf '  %-12s unavailable\n' "$tool"
+        fi
+    done
+    printf '  %-12s unresolved (no verified package or implementation)\n' wise
 }
 
 # ─── Main Dispatch ───────────────────────────────────────────
@@ -1122,7 +1209,8 @@ case "${1:-help}" in
         power_manage "${2:-status}"
         ;;
     install)
-        install_packages "${2:-help}"
+        shift
+        install_packages "${1:-help}" "${@:2}"
         ;;
     gpu)
         gpu_action "${2:-info}"
@@ -1137,6 +1225,12 @@ case "${1:-help}" in
         ;;
     info)
         show_info
+        ;;
+    runtime)
+        case "${2:-status}" in
+            status) runtime_status ;;
+            *) error "Unknown runtime action: ${2:-} (use status)" ;;
+        esac
         ;;
     help|--help|-h)
         show_help
