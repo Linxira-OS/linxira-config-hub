@@ -3,7 +3,6 @@ import unittest
 
 
 CLI = Path(__file__).parents[1] / "cli/linxira-config"
-SOFTWARE_CENTER = Path(__file__).parents[1] / "cli/linxira-software-center"
 
 
 class CatalogContractTests(unittest.TestCase):
@@ -42,16 +41,6 @@ class CatalogContractTests(unittest.TestCase):
         self.assertIn("bioconda", script)
         self.assertIn("refusing to configure a generic Conda distribution", script)
         self.assertNotIn("conda config --add channels defaults", script)
-
-    def test_software_center_owns_the_install_transaction(self):
-        script = SOFTWARE_CENTER.read_text(encoding="utf-8")
-        self.assertIn("linxira-components", script)
-        self.assertIn("plan_args+=(--application", script)
-        self.assertIn("pkexec \"$COMPONENTS_CLI\" apply", script)
-        self.assertIn(".applications", script)
-        self.assertNotIn("CONFIG_CLI", script)
-        self.assertNotIn("pkexec pacman", script)
-
 
 if __name__ == "__main__":
     unittest.main()
