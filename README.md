@@ -30,3 +30,7 @@ Conda configuration is intentionally limited to Miniforge. The CLI refuses to
 modify a generic Conda installation and only allows the reviewed channel IDs
 `conda-forge` and `bioconda`; both can be enabled together with strict channel
 priority. Anaconda `defaults` is not configured or enabled by Linxira.
+
+## License
+
+MIT. See `LICENSE`.
