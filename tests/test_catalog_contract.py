@@ -1,4 +1,6 @@
 from pathlib import Path
+import shutil
+import subprocess
 import unittest
 
 
@@ -6,16 +8,72 @@ CLI = Path(__file__).parents[1] / "cli/linxira-config"
 
 
 class CatalogContractTests(unittest.TestCase):
-    def test_cli_consumes_catalog_v2(self):
+    def test_cli_consumes_catalog_v3_and_retains_v2_compatibility(self):
         script = CLI.read_text(encoding="utf-8")
-        self.assertIn("catalog-v2.json", script)
-        self.assertIn(".catalogVersion == 2", script)
+        self.assertIn("catalog-v3.json", script)
+        self.assertIn(".catalogVersion == 2 or .catalogVersion == 3", script)
+        self.assertIn(".artifact.ids // .packages", script)
         self.assertNotIn("catalog-v1.json", script)
 
     def test_cli_does_not_expose_software_installation(self):
         script = CLI.read_text(encoding="utf-8")
         self.assertIn("Software installation is owned by Linxira Package Center", script)
         self.assertNotIn("Install (post-install packages)", script)
+        self.assertNotIn("install_catalog_", script)
+        self.assertNotIn("install_packages()", script)
+        self.assertNotIn("Installing Profiles", script)
+        self.assertNotIn("Installing Applications", script)
+        self.assertFalse((CLI.parents[1] / "profiles/science.conf").exists())
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is not available")
+    def test_legacy_install_entrypoints_fail_closed(self):
+        for arguments in (("install", "firefox"), ("workflow", "science")):
+            result = subprocess.run(
+                ["bash", "cli/linxira-config", *arguments],
+                cwd=CLI.parents[1],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Software installation is owned by Linxira Package Center", result.stdout)
+
+    def test_catalog_queries_are_read_only_and_status_filtered(self):
+        script = CLI.read_text(encoding="utf-8")
+        self.assertIn("catalog <kind>", script)
+        self.assertIn("use software/component/bundle", script)
+        self.assertIn("installed|partial|external|pending|drifted|reboot-required", script)
+        self.assertIn("--all", script)
+        self.assertIn("(.software // .applications // [])", script)
+        self.assertIn("(.components // .profiles // [])", script)
+        self.assertIn("(.bundles // .desktopBundles // [])", script)
+        catalog_section = script.split("# ─── Catalog Queries", 1)[1].split("# ─── Service Management", 1)[0]
+        self.assertNotIn("sudo ", catalog_section)
+        self.assertNotIn("pacman -S", catalog_section)
+
+    def test_ssh_key_and_authorized_key_boundaries_are_explicit(self):
+        script = CLI.read_text(encoding="utf-8")
+        self.assertIn("ssh key list", script)
+        self.assertIn("ssh key fingerprint", script)
+        self.assertIn("ssh authorized add", script)
+        self.assertIn("Refusing to use a symlinked SSH directory", script)
+        self.assertIn("without authorized_keys options", script)
+        self.assertIn("removal requires --yes", script)
+        self.assertNotIn('read -p "Overwrite?', script)
+        self.assertNotIn("-N ''", script)
+
+    def test_cli_has_no_generic_shell_executor(self):
+        script = CLI.read_text(encoding="utf-8")
+        self.assertNotIn("eval ", script)
+        self.assertNotIn("bash -c", script)
+        self.assertNotIn("sh -c", script)
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is not available")
+    def test_cli_has_valid_bash_syntax(self):
+        subprocess.run(
+            ["bash", "-n", "cli/linxira-config"],
+            cwd=CLI.parents[1],
+            check=True,
+        )
 
     def test_kernel_report_only_matches_official_names(self):
         script = CLI.read_text(encoding="utf-8")

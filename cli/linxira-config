@@ -1,12 +1,13 @@
 #!/bin/bash
-# Linxira Config Hub - CLI Tool v2.1
+# Linxira Config Hub - CLI Tool v2.2
 # Cross-ecosource configuration & security manager
 
 set -euo pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v2.json}"
+CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
+CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
 
 # Colors
 RED='\033[0;31m'
@@ -63,14 +64,13 @@ ${BOLD}Usage:${NC} linxira-config <command> [action] [options]
 ${BOLD}Commands:${NC}
   mirror <action>       Package mirror management
   source                Show package sources
-  workflow <name>       Apply workflow template
   service <svc> <act>   Manage system services
   security <action>     Security hardening & firewall
   ssh <action>          SSH server & key management
   rdp <action>          Remote desktop (RDP/VNC)
   virt <action>         Virtualization (KVM/QEMU/Docker)
   power <action>        Power management (sleep/suspend/hibernate)
-  install <pkg>         Post-install software packages
+  catalog <kind>        Query software/component/bundle state
   runtime <action>       Runtime and package-manager status
   gpu <action>          GPU driver management
   net <action>          Network diagnostics & fixes
@@ -90,8 +90,20 @@ ${BOLD}SSH:${NC}
   linxira-config ssh off               Disable SSH daemon
   linxira-config ssh status            Show SSH status & connection info
   linxira-config ssh port <number>     Change SSH port (default 22)
-  linxira-config ssh keygen            Generate SSH key pair (ed25519)
-  linxira-config ssh keyshow           Show public key for copying
+  linxira-config ssh key list                    List public keys
+  linxira-config ssh key show [name]             Show a public key
+  linxira-config ssh key fingerprint [name]      Show a key fingerprint
+  linxira-config ssh key generate [name]          Generate an Ed25519 key
+  linxira-config ssh key remove <name> --yes      Remove one key pair
+  linxira-config ssh authorized list              List authorized keys
+  linxira-config ssh authorized add <public-key>  Add one plain public key
+  linxira-config ssh authorized remove <fingerprint> --yes
+
+${BOLD}Catalog (read-only):${NC}
+  linxira-config catalog software [list] [--all|--status <state>]
+  linxira-config catalog component [list] [--all|--status <state>]
+  linxira-config catalog bundle [list] [--all|--status <state>]
+  linxira-config catalog <kind> show <id>
 
 ${BOLD}Remote Desktop:${NC}
   linxira-config rdp on                RDP status (enablement pending signed xrdp)
@@ -138,7 +150,6 @@ ${BOLD}Examples:${NC}
   linxira-config ssh on                # Enable SSH server
   linxira-config rdp on                # Enable remote desktop
   linxira-config virt kvm-on           # Enable KVM virtualization
-  linxira-config workflow bio          # Install bioinformatics tools
   linxira-config net diag              # Diagnose network issues
   linxira-config net fix               # Fix common network problems
 EOF
@@ -427,89 +438,125 @@ source_list() {
     echo ""
 }
 
-# ─── Workflow Templates ──────────────────────────────────────
+# ─── Catalog Queries ─────────────────────────────────────────
 
 catalog_require() {
     command -v jq >/dev/null || error "jq is required to read the Linxira catalog"
     [[ -r $CATALOG_PATH ]] || error "Linxira catalog not found: $CATALOG_PATH"
-    jq -e '.catalogVersion == 2 and (.sources | type == "array") and (.profiles | type == "array")' \
+    jq -e '(.catalogVersion == 2 or .catalogVersion == 3) and (.sources | type == "array") and (.applications | type == "array")' \
         "$CATALOG_PATH" >/dev/null || error "The Linxira catalog is invalid"
 }
 
-catalog_list_profiles() {
-    catalog_require
-    jq -r '.profiles[] | "  \(.id)\t\(.name.en)"' "$CATALOG_PATH"
+catalog_collection() {
+    case "$1" in
+        software) printf '%s\n' '(.software // .applications // [])' ;;
+        component) printf '%s\n' '(.components // .profiles // [])' ;;
+        bundle) printf '%s\n' '(.bundles // .desktopBundles // [])' ;;
+        *) error "Unknown catalog kind: $1 (use software/component/bundle)" ;;
+    esac
 }
 
-catalog_list_applications() {
-    catalog_require
-    jq -r '.applications[] | "  \(.id)\t\(.name.en)"' "$CATALOG_PATH"
+catalog_validate_status() {
+    case "$1" in
+        installed|partial|external|pending|drifted|reboot-required|not-installed|unavailable) ;;
+        *) error "Unknown catalog status: $1" ;;
+    esac
 }
 
-catalog_profile_packages() {
-    local profile=$1
-    catalog_require
-    jq -er --arg profile "$profile" \
-        '[.profiles[] | select(.id == $profile and .source == "arch")][0].packages[]' \
-        "$CATALOG_PATH" 2>/dev/null || error "Unknown native profile: $profile"
+catalog_state_require() {
+    [[ -e $CATALOG_STATE_PATH ]] || return
+    [[ -f $CATALOG_STATE_PATH && ! -L $CATALOG_STATE_PATH && -r $CATALOG_STATE_PATH ]] || \
+        error "Catalog state must be a readable regular file: $CATALOG_STATE_PATH"
+    jq -e '
+        .catalogStateVersion == 1 and (.items | type == "array") and
+        all(.items[];
+            (.kind | IN("software", "component", "bundle")) and
+            (.id | type == "string") and
+            (.status | IN("installed", "partial", "external", "pending", "drifted", "reboot-required", "not-installed", "unavailable")))
+    ' "$CATALOG_STATE_PATH" >/dev/null || error "The Linxira catalog state file is invalid"
 }
 
-catalog_application_packages() {
-    local application=$1
-    catalog_require
-    jq -er --arg application "$application" \
-        '[.applications[] | select(.id == $application and .source == "arch" and .installer == true)][0].packages[]' \
-        "$CATALOG_PATH" 2>/dev/null || error "Unknown native application: $application"
+catalog_explicit_status() {
+    local kind=$1 id=$2
+    [[ -f $CATALOG_STATE_PATH ]] || return
+    jq -er --arg kind "$kind" --arg id "$id" \
+        '[.items[] | select(.kind == $kind and .id == $id)][-1].status // empty' \
+        "$CATALOG_STATE_PATH" 2>/dev/null || true
 }
 
-install_catalog_profile() {
-    install_catalog_profiles "$1"
-}
-
-install_catalog_profiles() {
-    local profile packages_file profile_name
-    local -a packages=()
-    ((${#@} > 0)) || error "Specify at least one profile"
-    packages_file=$(mktemp)
-    trap 'rm -f -- "$packages_file"' RETURN
-    for profile_name in "$@"; do
-        mapfile -t profile_packages < <(catalog_profile_packages "$profile_name")
-        ((${#profile_packages[@]} > 0)) || error "Profile has no installable packages: $profile_name"
-        printf '%s\n' "${profile_packages[@]}" >>"$packages_file"
+catalog_observed_status() {
+    local packages=$1 installed_file=$2 package total=0 installed=0
+    IFS=',' read -r -a package_list <<<"$packages"
+    for package in "${package_list[@]}"; do
+        [[ -n $package ]] || continue
+        ((total += 1))
+        grep -Fqx -- "$package" "$installed_file" && ((installed += 1)) || true
     done
-    mapfile -t packages < <(sort -u "$packages_file")
-    header "Installing Profiles: $*"
-    sudo pacman --sync --refresh --needed --noconfirm -- "${packages[@]}"
-    for profile in "$@"; do
-        success "Profile installed: $profile"
-    done
+    if ((total == 0 || installed == 0)); then
+        printf '%s\n' not-installed
+    elif ((installed == total)); then
+        printf '%s\n' external
+    else
+        printf '%s\n' partial
+    fi
 }
 
-install_catalog_applications() {
-    local applications_file application_name
-    local -a packages=()
-    ((${#@} > 0)) || error "Specify at least one application"
-    applications_file=$(mktemp)
-    trap 'rm -f -- "$applications_file"' RETURN
-    for application_name in "$@"; do
-        mapfile -t application_packages < <(catalog_application_packages "$application_name")
-        ((${#application_packages[@]} > 0)) || error "Application has no installable packages: $application_name"
-        printf '%s\n' "${application_packages[@]}" >>"$applications_file"
-    done
-    mapfile -t packages < <(sort -u "$applications_file")
-    header "Installing Applications: $*"
-    sudo pacman --sync --refresh --needed --noconfirm -- "${packages[@]}"
-    for application_name in "$@"; do
-        success "Application installed: $application_name"
-    done
+catalog_records() {
+    local kind=$1 collection
+    collection=$(catalog_collection "$kind")
+    jq -r "$collection | .[] | [.id, (.name.en // .name // .id), (.source // .provider // \"arch\"), (((.artifact.ids // .packages // []) | map(select(type == \"string\"))) | join(\",\"))] | @tsv" \
+        "$CATALOG_PATH"
 }
 
-workflow_apply() {
-    local name=$1
-    case "$name" in
-        help|--help|-h) catalog_list_profiles ;;
-        bio) install_catalog_profile bioinformatics ;;
-        *) install_catalog_profile "$name" ;;
+catalog_list() {
+    local kind=$1 mode=${2:-default} requested_status=${3:-} installed_file id name source packages status
+    catalog_require
+    catalog_state_require
+    installed_file=$(mktemp)
+    command -v pacman >/dev/null 2>&1 && pacman -Qq >"$installed_file" 2>/dev/null || true
+    header "Catalog ${kind^}"
+    while IFS=$'\t' read -r id name source packages; do
+        [[ -n $id ]] || continue
+        status=$(catalog_explicit_status "$kind" "$id")
+        [[ -n $status ]] || status=$(catalog_observed_status "$packages" "$installed_file")
+        if [[ $mode == status ]]; then
+            [[ $status == "$requested_status" ]] || continue
+        elif [[ $mode != all ]]; then
+            case "$status" in
+                installed|partial|external|pending|drifted|reboot-required) ;;
+                *) continue ;;
+            esac
+        fi
+        printf '  %-12s %-18s %-12s %s\n' "$status" "$id" "$source" "$name"
+    done < <(catalog_records "$kind")
+    rm -f -- "$installed_file"
+}
+
+catalog_show() {
+    local kind=$1 id=$2 collection
+    catalog_require
+    [[ $id =~ ^[a-z0-9-]+$ ]] || error "Invalid catalog ID: $id"
+    collection=$(catalog_collection "$kind")
+    jq -er --arg id "$id" "$collection | map(select(.id == \$id)) | if length == 1 then .[0] else error(\"unknown catalog ID\") end" \
+        "$CATALOG_PATH" || error "Unknown $kind: $id"
+}
+
+catalog_manage() {
+    local kind=${1:-} action=${2:-list} option=${3:-} value=${4:-}
+    catalog_collection "$kind" >/dev/null
+    case "$action" in
+        list)
+            case "$option" in
+                '') catalog_list "$kind" ;;
+                --all) [[ -z $value ]] || error "Unexpected catalog argument: $value"; catalog_list "$kind" all ;;
+                --status) [[ -n $value ]] || error "Specify a catalog status"; catalog_validate_status "$value"; catalog_list "$kind" status "$value" ;;
+                *) error "Unknown catalog option: $option (use --all or --status <state>)" ;;
+            esac
+            ;;
+        --all) [[ -z $option ]] || error "Unexpected catalog argument: $option"; catalog_list "$kind" all ;;
+        --status) [[ -n $option ]] || error "Specify a catalog status"; catalog_validate_status "$option"; catalog_list "$kind" status "$option" ;;
+        show) [[ -n $option && -z $value ]] || error "Use: linxira-config catalog $kind show <id>"; catalog_show "$kind" "$option" ;;
+        *) error "Unknown catalog action: $action (use list/show/--all/--status)" ;;
     esac
 }
 
@@ -740,8 +787,232 @@ ufw_manage() {
 
 # ─── SSH Management ──────────────────────────────────────────
 
+ssh_target_context() {
+    SSH_TARGET_USER=$(target_user)
+    [[ -n $SSH_TARGET_USER ]] || error "Unable to determine the target user"
+    SSH_TARGET_HOME=$(getent passwd "$SSH_TARGET_USER" | cut -d: -f6)
+    [[ -n $SSH_TARGET_HOME && $SSH_TARGET_HOME == /* ]] || error "Unable to determine the target user's home"
+    SSH_DIR=$SSH_TARGET_HOME/.ssh
+    [[ ! -L $SSH_DIR ]] || error "Refusing to use a symlinked SSH directory: $SSH_DIR"
+}
+
+ssh_prepare_dir() {
+    ssh_target_context
+    if [[ ! -e $SSH_DIR ]]; then
+        mkdir -m 700 -- "$SSH_DIR"
+    fi
+    [[ -d $SSH_DIR && ! -L $SSH_DIR ]] || error "SSH path is not a regular directory: $SSH_DIR"
+    chmod 700 -- "$SSH_DIR"
+    [[ $(id -u) -ne 0 ]] || chown "$SSH_TARGET_USER" -- "$SSH_DIR"
+}
+
+ssh_validate_key_name() {
+    local name=$1
+    [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ && $name != '.' && $name != '..' ]] || \
+        error "Invalid SSH key name: $name"
+}
+
+ssh_public_key_file() {
+    local name=$1 path
+    ssh_validate_key_name "$name"
+    ssh_target_context
+    path=$SSH_DIR/$name.pub
+    [[ -f $path && ! -L $path ]] || error "SSH public key not found: $name"
+    printf '%s\n' "$path"
+}
+
+ssh_key_list() {
+    local public found=false
+    command -v ssh-keygen >/dev/null || error "ssh-keygen is required"
+    ssh_target_context
+    header "SSH Public Keys"
+    [[ -d $SSH_DIR ]] || { info "No SSH keys found"; return; }
+    for public in "$SSH_DIR"/*.pub; do
+        [[ -f $public && ! -L $public ]] || continue
+        found=true
+        printf '  %-24s %s\n' "$(basename "$public" .pub)" "$(ssh-keygen -lf "$public")"
+    done
+    $found || info "No SSH keys found"
+}
+
+ssh_key_show() {
+    local public
+    public=$(ssh_public_key_file "${1:-id_ed25519}")
+    cat -- "$public"
+}
+
+ssh_key_fingerprint() {
+    local public
+    public=$(ssh_public_key_file "${1:-id_ed25519}")
+    ssh-keygen -lf "$public"
+}
+
+ssh_key_generate() {
+    local name=${1:-id_ed25519} private public
+    command -v ssh-keygen >/dev/null || error "ssh-keygen is required"
+    ssh_validate_key_name "$name"
+    ssh_prepare_dir
+    private=$SSH_DIR/$name
+    public=$private.pub
+    [[ ! -e $private && ! -L $private && ! -e $public && ! -L $public ]] || \
+        error "SSH key already exists: $name"
+    ssh-keygen -q -t ed25519 -C "linxira@$(hostname)" -f "$private"
+    chmod 600 -- "$private"
+    chmod 644 -- "$public"
+    if [[ $(id -u) -eq 0 ]]; then
+        chown "$SSH_TARGET_USER" -- "$private" "$public"
+    fi
+    success "SSH key generated: $private"
+    cat -- "$public"
+}
+
+ssh_key_remove() {
+    local name=${1:-} confirmation=${2:-} private public
+    [[ -n $name ]] || error "Specify an SSH key name"
+    [[ $confirmation == --yes ]] || error "SSH key removal requires --yes"
+    ssh_validate_key_name "$name"
+    ssh_target_context
+    private=$SSH_DIR/$name
+    public=$private.pub
+    [[ ! -L $private && ! -L $public ]] || error "Refusing to remove a symlinked SSH key"
+    [[ -f $private || -f $public ]] || error "SSH key not found: $name"
+    [[ ! -e $private || -f $private ]] || error "SSH private key path is not a regular file"
+    [[ ! -e $public || -f $public ]] || error "SSH public key path is not a regular file"
+    rm -f -- "$private" "$public"
+    success "SSH key removed: $name"
+}
+
+ssh_key_manage() {
+    local action=${1:-list}
+    case "$action" in
+        list) [[ $# -eq 1 ]] || error "Use: linxira-config ssh key list"; ssh_key_list ;;
+        show) [[ $# -le 2 ]] || error "Use: linxira-config ssh key show [name]"; ssh_key_show "${2:-}" ;;
+        fingerprint) [[ $# -le 2 ]] || error "Use: linxira-config ssh key fingerprint [name]"; ssh_key_fingerprint "${2:-}" ;;
+        generate) [[ $# -le 2 ]] || error "Use: linxira-config ssh key generate [name]"; ssh_key_generate "${2:-}" ;;
+        remove) [[ $# -eq 3 ]] || error "Use: linxira-config ssh key remove <name> --yes"; ssh_key_remove "$2" "$3" ;;
+        *) error "Unknown SSH key action: $action (use list/show/fingerprint/generate/remove)" ;;
+    esac
+}
+
+ssh_authorized_file() {
+    ssh_prepare_dir
+    SSH_AUTHORIZED_FILE=$SSH_DIR/authorized_keys
+    [[ ! -L $SSH_AUTHORIZED_FILE ]] || error "Refusing to use a symlinked authorized_keys file"
+    [[ ! -e $SSH_AUTHORIZED_FILE || -f $SSH_AUTHORIZED_FILE ]] || \
+        error "authorized_keys is not a regular file"
+}
+
+ssh_authorized_list() {
+    local line fingerprint form found=false
+    command -v ssh-keygen >/dev/null || error "ssh-keygen is required"
+    ssh_authorized_file
+    header "Authorized SSH Keys"
+    [[ -f $SSH_AUTHORIZED_FILE ]] || { info "No authorized keys found"; return; }
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ -n $line && $line != '#'* ]] || continue
+        fingerprint=$(printf '%s\n' "$line" | ssh-keygen -lf - 2>/dev/null) || continue
+        form=optioned
+        [[ $line =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521)[[:space:]]+[A-Za-z0-9+/]+={0,2}([[:space:]].*)?$ ]] && form=plain
+        found=true
+        printf '  %-9s %s\n' "[$form]" "$fingerprint"
+    done <"$SSH_AUTHORIZED_FILE"
+    $found || info "No plain authorized keys found"
+}
+
+ssh_authorized_add() {
+    local source=${1:-} line extra temp
+    [[ -n $source ]] || error "Specify a public key file"
+    command -v ssh-keygen >/dev/null || error "ssh-keygen is required"
+    [[ -f $source && ! -L $source && -r $source ]] || error "Public key must be a readable regular file"
+    IFS= read -r line <"$source" || true
+    extra=$(tail -n +2 -- "$source" | grep -cv '^[[:space:]]*$' || true)
+    [[ $extra -eq 0 ]] || error "Public key file must contain exactly one key"
+    [[ $line =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521)[[:space:]]+[A-Za-z0-9+/]+={0,2}([[:space:]].*)?$ ]] || \
+        error "Only plain SSH public keys without authorized_keys options are accepted"
+    printf '%s\n' "$line" | ssh-keygen -lf - >/dev/null 2>&1 || error "Invalid SSH public key"
+    ssh_authorized_file
+    if [[ -f $SSH_AUTHORIZED_FILE ]] && grep -Fqx -- "$line" "$SSH_AUTHORIZED_FILE"; then
+        info "SSH public key is already authorized"
+        return
+    fi
+    temp=$(mktemp "$SSH_DIR/.authorized_keys.XXXXXX")
+    trap 'rm -f -- "$temp"' RETURN
+    [[ ! -f $SSH_AUTHORIZED_FILE ]] || cat -- "$SSH_AUTHORIZED_FILE" >"$temp"
+    printf '%s\n' "$line" >>"$temp"
+    chmod 600 -- "$temp"
+    [[ $(id -u) -ne 0 ]] || chown "$SSH_TARGET_USER" -- "$temp"
+    mv -fT -- "$temp" "$SSH_AUTHORIZED_FILE"
+    success "SSH public key authorized"
+}
+
+ssh_authorized_remove() {
+    local wanted=${1:-} confirmation=${2:-} line fingerprint current temp removed=false
+    [[ $wanted =~ ^SHA256:[A-Za-z0-9+/]+={0,2}$ ]] || error "Specify a valid SHA256 SSH fingerprint"
+    [[ $confirmation == --yes ]] || error "Authorized key removal requires --yes"
+    command -v ssh-keygen >/dev/null || error "ssh-keygen is required"
+    ssh_authorized_file
+    [[ -f $SSH_AUTHORIZED_FILE ]] || error "No authorized keys found"
+    temp=$(mktemp "$SSH_DIR/.authorized_keys.XXXXXX")
+    trap 'rm -f -- "$temp"' RETURN
+    while IFS= read -r line || [[ -n $line ]]; do
+        fingerprint=$(printf '%s\n' "$line" | ssh-keygen -lf - 2>/dev/null || true)
+        current=$(awk '{print $2}' <<<"$fingerprint")
+        if [[ $current == "$wanted" ]]; then
+            removed=true
+        else
+            printf '%s\n' "$line" >>"$temp"
+        fi
+    done <"$SSH_AUTHORIZED_FILE"
+    $removed || error "Authorized key fingerprint not found: $wanted"
+    chmod 600 -- "$temp"
+    [[ $(id -u) -ne 0 ]] || chown "$SSH_TARGET_USER" -- "$temp"
+    mv -fT -- "$temp" "$SSH_AUTHORIZED_FILE"
+    success "Authorized SSH key removed: $wanted"
+}
+
+ssh_authorized_manage() {
+    local action=${1:-list}
+    case "$action" in
+        list) [[ $# -eq 1 ]] || error "Use: linxira-config ssh authorized list"; ssh_authorized_list ;;
+        add) [[ $# -eq 2 ]] || error "Use: linxira-config ssh authorized add <public-key-file>"; ssh_authorized_add "$2" ;;
+        remove) [[ $# -eq 3 ]] || error "Use: linxira-config ssh authorized remove <fingerprint> --yes"; ssh_authorized_remove "$2" "$3" ;;
+        *) error "Unknown authorized key action: $action (use list/add/remove)" ;;
+    esac
+}
+
+ssh_effective_config() {
+    local key=$1 value
+    if command -v sshd >/dev/null 2>&1; then
+        value=$(sshd -T 2>/dev/null | awk -v key="$key" '$1 == key { print $2; exit }')
+    fi
+    case "$key" in
+        port) printf '%s\n' "${value:-22}" ;;
+        permitrootlogin) printf '%s\n' "${value:-unknown}" ;;
+        passwordauthentication) printf '%s\n' "${value:-unknown}" ;;
+    esac
+}
+
+ssh_status() {
+    local active=inactive enabled=disabled port root_login password_auth ip
+    systemctl is-active --quiet sshd 2>/dev/null && active=active
+    enabled=$(systemctl is-enabled sshd 2>/dev/null || true)
+    enabled=${enabled:-disabled}
+    port=$(ssh_effective_config port)
+    root_login=$(ssh_effective_config permitrootlogin)
+    password_auth=$(ssh_effective_config passwordauthentication)
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    header "SSH Status"
+    printf '  %-24s %s\n' "Service state:" "$active"
+    printf '  %-24s %s\n' "Service startup:" "$enabled"
+    printf '  %-24s %s\n' "Port:" "$port"
+    printf '  %-24s %s\n' "Root login:" "$root_login"
+    printf '  %-24s %s\n' "Password authentication:" "$password_auth"
+    [[ $active != active ]] || printf '  %-24s ssh user@%s -p %s\n' "Connect:" "${ip:-<ip>}" "$port"
+}
+
 ssh_manage() {
     local action=${1:-status}
+    shift || true
 
     case $action in
         on|enable|start)
@@ -751,7 +1022,8 @@ ssh_manage() {
             if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
                 sudo ufw allow ssh 2>/dev/null || true
             fi
-            local port=$(grep -E '^Port' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo 22)
+            local port
+            port=$(ssh_effective_config port)
             success "SSH enabled on port $port"
             ;;
         off|disable|stop)
@@ -760,17 +1032,10 @@ ssh_manage() {
             success "SSH disabled"
             ;;
         status)
-            if systemctl is-active sshd &>/dev/null; then
-                local port=$(grep -E '^Port' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo 22)
-                local ip=$(hostname -I | awk '{print $1}')
-                success "SSH running on port $port"
-                echo "  Connect: ssh user@${ip:-<ip>}:$port"
-            else
-                info "SSH is not running"
-            fi
+            ssh_status
             ;;
         port)
-            local port=${2:-}
+            local port=${1:-}
             [ -z "$port" ] && error "Please specify a port number"
             validate_port "$port"
             require_root
@@ -781,32 +1046,13 @@ ssh_manage() {
             sudo systemctl restart sshd
             success "SSH port changed to $port"
             ;;
-        keygen)
-            local keyfile="$HOME/.ssh/id_ed25519"
-            if [ -f "$keyfile" ]; then
-                warn "Key already exists at $keyfile"
-                read -p "Overwrite? (y/N): " confirm
-                [ "$confirm" != "y" ] && return
-            fi
-            ssh-keygen -t ed25519 -C "linxira@$(hostname)" -f "$keyfile" -N ""
-            success "SSH key generated: $keyfile"
-            echo ""
-            info "Public key (copy to remote server):"
-            cat "${keyfile}.pub"
-            ;;
-        keyshow)
-            local keyfile="$HOME/.ssh/id_ed25519.pub"
-            if [ ! -f "$keyfile" ]; then
-                warn "No SSH key found. Generate one with: linxira-config ssh keygen"
-                return
-            fi
-            echo ""
-            info "Your public key (copy this to authorized_keys):"
-            cat "$keyfile"
-            echo ""
+        key) if (($#)); then ssh_key_manage "$@"; else ssh_key_manage list; fi ;;
+        authorized) if (($#)); then ssh_authorized_manage "$@"; else ssh_authorized_manage list; fi ;;
+        keygen|keyshow)
+            error "Legacy SSH key action removed; use 'ssh key generate' or 'ssh key show'"
             ;;
         *)
-            error "Unknown SSH action: $action (use on/off/status/port/keygen/keyshow)"
+            error "Unknown SSH action: $action (use on/off/status/port/key/authorized)"
             ;;
     esac
 }
@@ -1209,22 +1455,6 @@ net_dns() {
     esac
 }
 
-# ─── Post-install Packages ──────────────────────────────────
-
-install_packages() {
-    local category=${1:-}
-    [[ -n $category ]] || error "Specify a profile. Use: linxira-config install help"
-    case "$category" in
-        help|--help|-h) catalog_list_profiles ;;
-        app|application|applications)
-            shift
-            ((${#@} > 0)) || { catalog_list_applications; return; }
-            install_catalog_applications "$@"
-            ;;
-        *) shift; install_catalog_profiles "$category" "$@" ;;
-    esac
-}
-
 # ─── System Info ─────────────────────────────────────────────
 
 show_info() {
@@ -1288,8 +1518,8 @@ case "${1:-help}" in
     source)
         source_list
         ;;
-    workflow)
-        error "Software workflows are installed through Linxira Package Center"
+    workflow|install)
+        error "Software installation is owned by Linxira Package Center"
         ;;
     service)
         service_manage "${2:-}" "${3:-}"
@@ -1303,7 +1533,7 @@ case "${1:-help}" in
         esac
         ;;
     ssh)
-        ssh_manage "${2:-status}"
+        ssh_manage "${@:2}"
         ;;
     rdp)
         rdp_manage "${2:-on}"
@@ -1314,8 +1544,8 @@ case "${1:-help}" in
     power)
         power_manage "${2:-status}"
         ;;
-    install)
-        error "Software installation is owned by Linxira Package Center"
+    catalog)
+        catalog_manage "${2:-}" "${3:-list}" "${4:-}" "${5:-}"
         ;;
     gpu)
         gpu_action "${2:-info}"
