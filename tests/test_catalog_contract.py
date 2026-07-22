@@ -100,5 +100,34 @@ class CatalogContractTests(unittest.TestCase):
         self.assertIn("refusing to configure a generic Conda distribution", script)
         self.assertNotIn("conda config --add channels defaults", script)
 
+    @unittest.skipUnless(shutil.which("bash"), "bash is not available")
+    def test_unsafe_system_mutations_fail_closed_at_dispatch(self):
+        commands = (
+            ("net", "fix"),
+            ("net", "dns", "set", "1.1.1.1"),
+            ("security", "harden"),
+            ("security", "ufw", "on"),
+            ("service", "ssh", "on"),
+            ("ssh", "port", "2222"),
+            ("virt", "docker-on"),
+            ("power", "nosleep"),
+            ("mirror", "arch", "set", "official"),
+            ("mirror", "flatpak", "reset"),
+            ("rdp", "off"),
+        )
+        for arguments in commands:
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    ["bash", "cli/linxira-config", *arguments],
+                    cwd=CLI.parents[1],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    "disabled until the Linxira system transaction backend",
+                    result.stdout,
+                )
+
 if __name__ == "__main__":
     unittest.main()

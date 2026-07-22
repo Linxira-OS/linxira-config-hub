@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="2.2.1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
@@ -23,6 +23,10 @@ success() { echo -e "${GREEN}[OK]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 header() { echo -e "\n${BOLD}${CYAN}=== $1 ===${NC}"; }
+
+backend_pending() {
+    error "This action is disabled until the Linxira system transaction backend provides plan, verify, receipt, and rollback support."
+}
 
 require_root() {
     [ "$(id -u)" -eq 0 ] || error "This command requires root privileges. Use sudo."
@@ -79,17 +83,15 @@ ${BOLD}Commands:${NC}
 
 ${BOLD}Security:${NC}
   linxira-config security status       Show security posture
-  linxira-config security harden       Apply recommended hardening
-  linxira-config security ufw on       Enable UFW firewall (deny incoming)
-  linxira-config security ufw off      Disable UFW firewall
+  linxira-config security harden       Disabled pending transactional backend
+  linxira-config security ufw on|off   Disabled pending transactional backend
   linxira-config security ufw status   Show firewall rules
-  linxira-config security ufw allow <port>   Allow a port through firewall
+  linxira-config security ufw allow <port>   Disabled pending transactional backend
 
 ${BOLD}SSH:${NC}
-  linxira-config ssh on                Enable & start SSH daemon
-  linxira-config ssh off               Disable SSH daemon
+  linxira-config ssh on|off            Disabled pending transactional backend
   linxira-config ssh status            Show SSH status & connection info
-  linxira-config ssh port <number>     Change SSH port (default 22)
+  linxira-config ssh port <number>     Disabled pending transactional backend
   linxira-config ssh key list                    List public keys
   linxira-config ssh key show [name]             Show a public key
   linxira-config ssh key fingerprint [name]      Show a key fingerprint
@@ -113,20 +115,16 @@ ${BOLD}Remote Desktop:${NC}
 
 ${BOLD}Virtualization:${NC}
   linxira-config virt status           Check virtualization support
-  linxira-config virt kvm-on           Enable KVM/QEMU
-  linxira-config virt docker-on        Install & enable Docker
-  linxira-config virt podman-on        Enable Podman (pre-installed)
+  linxira-config virt kvm-on|docker-on|podman-on
+                                        Disabled pending transactional backend
 
 ${BOLD}Power:${NC}
   linxira-config power status          Show power settings
-  linxira-config power nosleep         Disable auto-sleep/suspend
-  linxira-config power nosuspend       Disable suspend on lid close
-  linxira-config power noscreen        Disable screen blanking
-  linxira-config power restore         Restore default power settings
+  linxira-config power <action>        Disabled pending corrected power backend
 
 ${BOLD}Network:${NC}
   linxira-config net diag              Full network diagnostics
-  linxira-config net fix               Fix common network issues
+  linxira-config net fix               Disabled; unsafe broad network repair removed
   linxira-config net dns               Show current DNS servers
   linxira-config net dns set <ip>      Set DNS server (resolv.conf)
 
@@ -1501,14 +1499,23 @@ case "${1:-help}" in
         case "${2:-arch}" in
             list) mirror_list arch ;;
             speed) mirror_speed arch "${3:-}" ;;
-            set) mirror_set arch "${3:-}" ;;
-            reset) mirror_reset arch ;;
+            set|reset) backend_pending ;;
             arch|npm|pip|aur|flatpak|go)
                 case "${3:-list}" in
                     list) mirror_list "$2" ;;
                     speed) mirror_speed "$2" "${4:-}" ;;
-                    set) mirror_set "$2" "${4:-}" ;;
-                    reset) mirror_reset "$2" ;;
+                    set|reset)
+                        case "$2" in
+                            arch|flatpak) backend_pending ;;
+                            *)
+                                if [[ ${3:-} == set ]]; then
+                                    mirror_set "$2" "${4:-}"
+                                else
+                                    mirror_reset "$2"
+                                fi
+                                ;;
+                        esac
+                        ;;
                     *) error "Unknown mirror action: ${3:-} (use list/speed/set/reset)" ;;
                 esac
                 ;;
@@ -1522,27 +1529,41 @@ case "${1:-help}" in
         error "Software installation is owned by Linxira Package Center"
         ;;
     service)
-        service_manage "${2:-}" "${3:-}"
+        backend_pending
         ;;
     security)
         case "${2:-status}" in
             status) security_status ;;
-            harden) security_harden ;;
-            ufw) ufw_manage "${3:-status}" ;;
+            harden) backend_pending ;;
+            ufw)
+                if [[ ${3:-status} == status ]]; then
+                    ufw_manage status
+                else
+                    backend_pending
+                fi
+                ;;
             *) error "Unknown security action: ${2:-} (use status/harden/ufw)" ;;
         esac
         ;;
     ssh)
-        ssh_manage "${@:2}"
+        case "${2:-status}" in
+            on|off|port) backend_pending ;;
+            status|key|authorized) ssh_manage "${@:2}" ;;
+            *) error "Unknown SSH action: ${2:-}" ;;
+        esac
         ;;
     rdp)
-        rdp_manage "${2:-on}"
+        backend_pending
         ;;
     virt)
-        virt_manage "${2:-status}"
+        if [[ ${2:-status} == status ]]; then
+            virt_manage status
+        else
+            backend_pending
+        fi
         ;;
     power)
-        power_manage "${2:-status}"
+        backend_pending
         ;;
     catalog)
         catalog_manage "${2:-}" "${3:-list}" "${4:-}" "${5:-}"
@@ -1553,8 +1574,14 @@ case "${1:-help}" in
     net)
         case "${2:-help}" in
             diag) net_diag ;;
-            fix) net_fix ;;
-            dns) net_dns "${3:-show}" "${4:-}" ;;
+            fix) backend_pending ;;
+            dns)
+                if [[ ${3:-show} == show ]]; then
+                    net_dns show
+                else
+                    backend_pending
+                fi
+                ;;
             *) error "Unknown net action: ${2:-} (use diag/fix/dns)" ;;
         esac
         ;;
