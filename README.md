@@ -3,11 +3,11 @@
 Configuration and diagnostics tools for Linxira OS.
 
 The current supported surface is `cli/linxira-config` for administrator-facing
-source, runtime, SSH, network and controlled configuration management. Software installation is owned by
-the independent [Linxira Package Center](https://github.com/Linxira-OS/linxira-package-center)
-and its `linxira-components` transaction backend. Config Hub does not contain a
-Package Center implementation or expose software installation commands. Its
-mirror commands cover
+source, runtime, SSH, network and controlled configuration management. General
+software management is owned by Shelly, while curated application setup is owned
+by Quick System Software Setup and its `linxira-components` transaction backend.
+Config Hub does not contain a software-center implementation or expose software
+installation commands. Its mirror commands cover
 Arch, npm, PyPI, AUR, Go modules and explicitly enabled Flatpak remotes.
 
 ## Catalog queries

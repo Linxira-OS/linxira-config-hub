@@ -68,14 +68,15 @@ ${BOLD}Usage:${NC} linxira-config <command> [action] [options]
 ${BOLD}Commands:${NC}
   mirror <action>       Package mirror management
   source                Show package sources
-  service <svc> <act>   Manage system services
+  service <svc> <act>   Disabled pending transactional backend
   security <action>     Security hardening & firewall
   ssh <action>          SSH server & key management
   rdp <action>          Remote desktop (RDP/VNC)
   virt <action>         Virtualization (KVM/QEMU/Docker)
-  power <action>        Power management (sleep/suspend/hibernate)
+  power <action>        Power status and disabled sleep/suspend mutations
   catalog <kind>        Query software/component/bundle state
   runtime <action>       Runtime and package-manager status
+  conda channels <act>  Miniforge channel configuration
   gpu <action>          GPU driver management
   net <action>          Network diagnostics & fixes
   info                  Show system information
@@ -109,9 +110,9 @@ ${BOLD}Catalog (read-only):${NC}
 
 ${BOLD}Remote Desktop:${NC}
   linxira-config rdp on                RDP status (enablement pending signed xrdp)
-  linxira-config rdp off               Disable RDP
+  linxira-config rdp off               Disabled pending transactional backend
   linxira-config rdp vnc-on            VNC status (enablement pending session policy)
-  linxira-config rdp vnc-off           Disable VNC
+  linxira-config rdp vnc-off           Disabled pending transactional backend
 
 ${BOLD}Virtualization:${NC}
   linxira-config virt status           Check virtualization support
@@ -126,13 +127,14 @@ ${BOLD}Network:${NC}
   linxira-config net diag              Full network diagnostics
   linxira-config net fix               Disabled; unsafe broad network repair removed
   linxira-config net dns               Show current DNS servers
-  linxira-config net dns set <ip>      Set DNS server (resolv.conf)
+  linxira-config net dns set <ip>      Disabled pending transactional backend
 
 ${BOLD}Mirror:${NC}
   linxira-config mirror <type> list          List Arch, npm, pip, AUR, Flatpak, or Go sources
   linxira-config mirror <type> speed [id]    Measure source latency
-  linxira-config mirror <type> set <id|url>  Select a source
-  linxira-config mirror <type> reset         Restore the official source
+  linxira-config mirror npm|pip|aur|go set <id|url>  Select a user-scoped source
+  linxira-config mirror npm|pip|aur|go reset         Restore the official source
+  linxira-config mirror arch|flatpak set|reset        Disabled pending transactional backend
   linxira-config mirror aur set <https-url>  Set a validated custom AUR Git mirror
   linxira-config mirror flatpak set <id|url> Configure an explicit Flatpak remote
   linxira-config mirror go set <id|url>      Configure the Go module proxy
@@ -144,12 +146,12 @@ ${BOLD}Miniforge:${NC}
   linxira-config conda channels reset      Remove configured channels
 
 ${BOLD}Examples:${NC}
-  linxira-config security harden       # One-click security setup
-  linxira-config ssh on                # Enable SSH server
-  linxira-config rdp on                # Enable remote desktop
-  linxira-config virt kvm-on           # Enable KVM virtualization
+  linxira-config security status       # Show security posture
+  linxira-config ssh status            # Show SSH status
+  linxira-config runtime status        # Show runtime and package-manager status
+  linxira-config catalog software --all # List catalog software state
   linxira-config net diag              # Diagnose network issues
-  linxira-config net fix               # Fix common network problems
+  linxira-config mirror arch list      # List Arch mirror candidates
 EOF
 }
 
@@ -1526,7 +1528,7 @@ case "${1:-help}" in
         source_list
         ;;
     workflow|install)
-        error "Software installation is owned by Linxira Package Center"
+        error "Software installation is owned by Shelly and Quick System Software Setup"
         ;;
     service)
         backend_pending
@@ -1563,7 +1565,11 @@ case "${1:-help}" in
         fi
         ;;
     power)
-        backend_pending
+        if [[ ${2:-status} == status ]]; then
+            power_manage status
+        else
+            backend_pending
+        fi
         ;;
     catalog)
         catalog_manage "${2:-}" "${3:-list}" "${4:-}" "${5:-}"

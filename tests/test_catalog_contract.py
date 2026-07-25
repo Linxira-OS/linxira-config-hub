@@ -17,7 +17,7 @@ class CatalogContractTests(unittest.TestCase):
 
     def test_cli_does_not_expose_software_installation(self):
         script = CLI.read_text(encoding="utf-8")
-        self.assertIn("Software installation is owned by Linxira Package Center", script)
+        self.assertIn("Software installation is owned by Shelly and Quick System Software Setup", script)
         self.assertNotIn("Install (post-install packages)", script)
         self.assertNotIn("install_catalog_", script)
         self.assertNotIn("install_packages()", script)
@@ -35,7 +35,7 @@ class CatalogContractTests(unittest.TestCase):
                 capture_output=True,
             )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Software installation is owned by Linxira Package Center", result.stdout)
+            self.assertIn("Software installation is owned by Shelly and Quick System Software Setup", result.stdout)
 
     def test_catalog_queries_are_read_only_and_status_filtered(self):
         script = CLI.read_text(encoding="utf-8")
@@ -99,6 +99,25 @@ class CatalogContractTests(unittest.TestCase):
         self.assertIn("bioconda", script)
         self.assertIn("refusing to configure a generic Conda distribution", script)
         self.assertNotIn("conda config --add channels defaults", script)
+
+    def test_help_examples_do_not_advertise_disabled_mutations(self):
+        script = CLI.read_text(encoding="utf-8")
+        examples = script.split("${BOLD}Examples:${NC}", 1)[1].split("EOF", 1)[0]
+        for disabled in ("security harden", "ssh on", "rdp on", "virt kvm-on", "net fix"):
+            self.assertNotIn(disabled, examples)
+        self.assertIn("runtime status", examples)
+        self.assertIn("mirror arch list", examples)
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is not available")
+    def test_power_status_is_read_only_and_dispatches(self):
+        result = subprocess.run(
+            ["bash", "cli/linxira-config", "power", "status"],
+            cwd=CLI.parents[1],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Power Settings", result.stdout)
 
     @unittest.skipUnless(shutil.which("bash"), "bash is not available")
     def test_unsafe_system_mutations_fail_closed_at_dispatch(self):
