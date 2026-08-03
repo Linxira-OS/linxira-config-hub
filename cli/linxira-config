@@ -80,6 +80,7 @@ ${BOLD}Commands:${NC}
   gpu <action>          GPU driver management
   net <action>          Network diagnostics & fixes
   info                  Show system information
+  status                Show a quick system status summary
   help                  Show this help
 
 ${BOLD}Security:${NC}
@@ -1494,6 +1495,39 @@ runtime_status() {
     printf '  %-12s unresolved (no verified package or implementation)\n' wise
 }
 
+# ─── Quick Status ────────────────────────────────────────────
+
+quick_status() {
+    header "Linxira System Status"
+    printf '  %-20s %s\n' "OS:" "$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo "unknown")"
+    printf '  %-20s %s\n' "Kernel:" "$(uname -r 2>/dev/null || echo unknown)"
+    printf '  %-20s %s\n' "Desktop:" "$(printenv XDG_CURRENT_DESKTOP 2>/dev/null || echo unknown)"
+
+    header "Sources"
+    printf '  %-20s %s\n' "Arch:" "$(mirror_current arch)"
+    printf '  %-20s %s\n' "npm:" "$(mirror_current npm)"
+    printf '  %-20s %s\n' "PyPI:" "$(mirror_current pip)"
+    printf '  %-20s %s\n' "AUR:" "$(mirror_current aur)"
+    printf '  %-20s %s\n' "Go:" "$(mirror_current go)"
+    printf '  %-20s %s\n' "Flatpak:" "$(mirror_current flatpak)"
+
+    header "Runtimes"
+    for tool in python node npm rustc cargo go podman; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            printf '  %-20s installed\n' "$tool"
+        else
+            printf '  %-20s unavailable\n' "$tool"
+        fi
+    done
+
+    header "Maintenance"
+    printf '  %-20s %s\n' "Network:" "$(if systemctl is-active --quiet NetworkManager 2>/dev/null; then echo active; else echo inactive; fi)"
+    printf '  %-20s %s\n' "SSH server:" "$(if systemctl is-active --quiet sshd 2>/dev/null; then echo active; else echo inactive; fi)"
+    printf '  %-20s %s\n' "Updates:" "$(if systemctl is-active --quiet linxira-update.timer 2>/dev/null; then echo enabled; else echo disabled; fi)"
+    echo ""
+    echo "  Run 'linxira-config help' for all commands."
+}
+
 # ─── Main Dispatch ───────────────────────────────────────────
 
 case "${1:-help}" in
@@ -1593,6 +1627,9 @@ case "${1:-help}" in
         ;;
     info)
         show_info
+        ;;
+    status|quick-status)
+        quick_status
         ;;
     runtime)
         case "${2:-status}" in
