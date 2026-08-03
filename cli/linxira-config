@@ -464,7 +464,7 @@ catalog_validate_status() {
 }
 
 catalog_state_require() {
-    [[ -e $CATALOG_STATE_PATH ]] || return
+    [[ -e $CATALOG_STATE_PATH ]] || return 0
     [[ -f $CATALOG_STATE_PATH && ! -L $CATALOG_STATE_PATH && -r $CATALOG_STATE_PATH ]] || \
         error "Catalog state must be a readable regular file: $CATALOG_STATE_PATH"
     jq -e '
@@ -478,7 +478,7 @@ catalog_state_require() {
 
 catalog_explicit_status() {
     local kind=$1 id=$2
-    [[ -f $CATALOG_STATE_PATH ]] || return
+    [[ -f $CATALOG_STATE_PATH ]] || return 0
     jq -er --arg kind "$kind" --arg id "$id" \
         '[.items[] | select(.kind == $kind and .id == $id)][-1].status // empty' \
         "$CATALOG_STATE_PATH" 2>/dev/null || true
@@ -601,7 +601,7 @@ security_status() {
     # UFW
     if command -v ufw &>/dev/null; then
         local ufw_status
-        ufw_status=$(sudo ufw status 2>/dev/null | head -1)
+        ufw_status=$(sudo ufw status 2>/dev/null | head -1) || true
         if echo "$ufw_status" | grep -q "active"; then
             success "UFW Firewall: ACTIVE"
         else
@@ -790,7 +790,7 @@ ufw_manage() {
 ssh_target_context() {
     SSH_TARGET_USER=$(target_user)
     [[ -n $SSH_TARGET_USER ]] || error "Unable to determine the target user"
-    SSH_TARGET_HOME=$(getent passwd "$SSH_TARGET_USER" | cut -d: -f6)
+    SSH_TARGET_HOME=$(getent passwd "$SSH_TARGET_USER" | cut -d: -f6) || true
     [[ -n $SSH_TARGET_HOME && $SSH_TARGET_HOME == /* ]] || error "Unable to determine the target user's home"
     SSH_DIR=$SSH_TARGET_HOME/.ssh
     [[ ! -L $SSH_DIR ]] || error "Refusing to use a symlinked SSH directory: $SSH_DIR"
@@ -983,7 +983,7 @@ ssh_authorized_manage() {
 ssh_effective_config() {
     local key=$1 value
     if command -v sshd >/dev/null 2>&1; then
-        value=$(sshd -T 2>/dev/null | awk -v key="$key" '$1 == key { print $2; exit }')
+        value=$(sshd -T 2>/dev/null | awk -v key="$key" '$1 == key { print $2; exit }') || true
     fi
     case "$key" in
         port) printf '%s\n' "${value:-22}" ;;
@@ -1000,7 +1000,7 @@ ssh_status() {
     port=$(ssh_effective_config port)
     root_login=$(ssh_effective_config permitrootlogin)
     password_auth=$(ssh_effective_config passwordauthentication)
-    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}' 2>/dev/null) || true
     header "SSH Status"
     printf '  %-24s %s\n' "Service state:" "$active"
     printf '  %-24s %s\n' "Service startup:" "$enabled"
@@ -1337,7 +1337,7 @@ net_diag() {
     header "Firewall"
     if command -v ufw &>/dev/null; then
         local ufw_status
-        ufw_status=$(sudo ufw status 2>/dev/null | head -1)
+        ufw_status=$(sudo ufw status 2>/dev/null | head -1) || true
         if echo "$ufw_status" | grep -q "active"; then
             info "UFW: ACTIVE"
         else
