@@ -43,6 +43,43 @@ managed or pending states using this fixed shape:
 
 `LINXIRA_CATALOG_STATE_PATH` may select another state file for testing.
 
+## SSH quick start (turn this machine into a server)
+
+Enable and start the SSH daemon (current test builds gate `ssh on/off` behind
+the pending transactional backend, so use the equivalent command):
+
+```console
+sudo systemctl enable --now sshd
+sudo ufw allow ssh          # only if UFW is active
+linxira-config ssh status   # verify: Service state: active
+```
+
+Generate a key pair on the client you connect *from*:
+
+```console
+linxira-config ssh key generate            # Ed25519, ~/.ssh/id_ed25519
+linxira-config ssh key show                # copy the public key line
+```
+
+Authorize it on the server (plain public keys only, by design):
+
+```console
+echo 'ssh-ed25519 AAAA... user@host' > /tmp/key.pub
+linxira-config ssh authorized add /tmp/key.pub && rm /tmp/key.pub
+linxira-config ssh authorized list
+```
+
+Connect from the client (IP shown in `ssh status` → `Connect:`):
+
+```console
+ssh user@server-ip
+```
+
+Security notes: disable `PasswordAuthentication` in
+`/etc/ssh/sshd_config` before exposing to the public internet, and keep the
+firewall on. See the full tutorial at
+<https://linxira-os.github.io/docs/remote-access/> (or `/zh/docs/remote-access/`).
+
 ## SSH keys
 
 `ssh key list/show/fingerprint/generate/remove` manages named Ed25519 key pairs
