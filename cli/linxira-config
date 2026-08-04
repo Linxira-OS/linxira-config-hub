@@ -31,7 +31,10 @@ backend_pending() {
 }
 
 require_root() {
-    [ "$(id -u)" -eq 0 ] || error "This command requires root privileges. Use sudo."
+    local uid
+    uid=$(id -u 2>/dev/null) || error "This command requires root privileges. Use sudo."
+    [[ $uid =~ ^[0-9]+$ ]] || error "This command requires root privileges. Use sudo."
+    [ "$uid" -eq 0 ] || error "This command requires root privileges. Use sudo."
 }
 
 validate_port() {
@@ -88,14 +91,14 @@ ${BOLD}Commands:${NC}
 ${BOLD}Security:${NC}
   linxira-config security status       Show security posture
   linxira-config security harden       Disabled pending transactional backend
-  linxira-config security ufw on|off   Disabled pending transactional backend
+  linxira-config security ufw on|off   Enable/disable UFW firewall
   linxira-config security ufw status   Show firewall rules
-  linxira-config security ufw allow <port>   Disabled pending transactional backend
+  linxira-config security ufw allow <port>   Allow a TCP port through UFW
 
 ${BOLD}SSH:${NC}
-  linxira-config ssh on|off            Disabled pending transactional backend
+  linxira-config ssh on|off            Enable/disable SSH server
   linxira-config ssh status            Show SSH status & connection info
-  linxira-config ssh port <number>     Disabled pending transactional backend
+  linxira-config ssh port <number>     Change SSH port
   linxira-config ssh key list                    List public keys
   linxira-config ssh key show [name]             Show a public key
   linxira-config ssh key fingerprint [name]      Show a key fingerprint
@@ -128,16 +131,15 @@ ${BOLD}Power:${NC}
 
 ${BOLD}Network:${NC}
   linxira-config net diag              Full network diagnostics
-  linxira-config net fix               Disabled; unsafe broad network repair removed
   linxira-config net dns               Show current DNS servers
-  linxira-config net dns set <ip>      Disabled pending transactional backend
+  linxira-config net dns set <ip>      Set DNS server (write /etc/resolv.conf)
 
 ${BOLD}Mirror:${NC}
   linxira-config mirror <type> list          List Arch, npm, pip, AUR, Flatpak, or Go sources
   linxira-config mirror <type> speed [id]    Measure source latency
-  linxira-config mirror npm|pip|aur|go set <id|url>  Select a user-scoped source
-  linxira-config mirror npm|pip|aur|go reset         Restore the official source
-  linxira-config mirror arch|flatpak set|reset        Disabled pending transactional backend
+  linxira-config mirror <type> auto          Probe all sources and select the fastest
+  linxira-config mirror <type> set <id|url>  Select a source (user-scoped for npm/pip/aur/go)
+  linxira-config mirror <type> reset         Restore the official source
   linxira-config mirror aur set <https-url>  Set a validated custom AUR Git mirror
   linxira-config mirror flatpak set <id|url> Configure an explicit Flatpak remote
   linxira-config mirror go set <id|url>      Configure the Go module proxy
@@ -161,50 +163,65 @@ EOF
 # ─── Mirror Management ───────────────────────────────────────
 
 mirror_records() {
+    # Columns: id|name|country|url|probe
     case "$1" in
         arch)
             printf '%s\n' \
-                'official|Arch Linux geo mirror|https://geo.mirror.pkgbuild.com/$repo/os/$arch|https://geo.mirror.pkgbuild.com/core/os/x86_64/core.db' \
-                'tuna|Tsinghua TUNA|https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch|https://mirrors.tuna.tsinghua.edu.cn/archlinux/core/os/x86_64/core.db' \
-                'aliyun|Alibaba Cloud|https://mirrors.aliyun.com/archlinux/$repo/os/$arch|https://mirrors.aliyun.com/archlinux/core/os/x86_64/core.db' \
-                'ustc|USTC|https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch|https://mirrors.ustc.edu.cn/archlinux/core/os/x86_64/core.db'
+                'official|Arch Linux geo mirror|global|https://geo.mirror.pkgbuild.com/$repo/os/$arch|https://geo.mirror.pkgbuild.com/core/os/x86_64/core.db' \
+                'tuna|Tsinghua TUNA|cn|https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch|https://mirrors.tuna.tsinghua.edu.cn/archlinux/core/os/x86_64/core.db' \
+                'aliyun|Alibaba Cloud|cn|https://mirrors.aliyun.com/archlinux/$repo/os/$arch|https://mirrors.aliyun.com/archlinux/core/os/x86_64/core.db' \
+                'ustc|USTC|cn|https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch|https://mirrors.ustc.edu.cn/archlinux/core/os/x86_64/core.db' \
+                'tencent|Tencent Cloud|cn|https://mirrors.cloud.tencent.com/archlinux/$repo/os/$arch|https://mirrors.cloud.tencent.com/archlinux/core/os/x86_64/core.db' \
+                'huawei|Huawei Cloud|cn|https://repo.huaweicloud.com/archlinux/$repo/os/$arch|https://repo.huaweicloud.com/archlinux/core/os/x86_64/core.db' \
+                '163|NetEase 163|cn|https://mirrors.163.com/archlinux/$repo/os/$arch|https://mirrors.163.com/archlinux/core/os/x86_64/core.db'
             ;;
         npm)
             printf '%s\n' \
-                'official|npm official|https://registry.npmjs.org/|https://registry.npmjs.org/npm' \
-                'npmmirror|npmmirror|https://registry.npmmirror.com/|https://registry.npmmirror.com/npm'
+                'official|npm official|global|https://registry.npmjs.org/|https://registry.npmjs.org/npm' \
+                'npmmirror|npmmirror (Taobao)|cn|https://registry.npmmirror.com/|https://registry.npmmirror.com/npm' \
+                'tencent|Tencent Cloud|cn|https://mirrors.cloud.tencent.com/npm/|https://mirrors.cloud.tencent.com/npm/npm' \
+                'huawei|Huawei Cloud|cn|https://repo.huaweicloud.com/repository/npm/|https://repo.huaweicloud.com/repository/npm/npm' \
+                'sjtu|SJTU|cn|https://mirror.sjtu.edu.cn/npm-registry/|https://mirror.sjtu.edu.cn/npm-registry/npm'
             ;;
         pip)
             printf '%s\n' \
-                'official|PyPI official|https://pypi.org/simple|https://pypi.org/simple/pip/' \
-                'tuna|Tsinghua TUNA|https://pypi.tuna.tsinghua.edu.cn/simple|https://pypi.tuna.tsinghua.edu.cn/simple/pip/' \
-                'aliyun|Alibaba Cloud|https://mirrors.aliyun.com/pypi/simple|https://mirrors.aliyun.com/pypi/simple/pip/' \
-                'ustc|USTC|https://mirrors.ustc.edu.cn/pypi/simple|https://mirrors.ustc.edu.cn/pypi/simple/pip/'
+                'official|PyPI official|global|https://pypi.org/simple|https://pypi.org/simple/pip/' \
+                'tuna|Tsinghua TUNA|cn|https://pypi.tuna.tsinghua.edu.cn/simple|https://pypi.tuna.tsinghua.edu.cn/simple/pip/' \
+                'aliyun|Alibaba Cloud|cn|https://mirrors.aliyun.com/pypi/simple|https://mirrors.aliyun.com/pypi/simple/pip/' \
+                'ustc|USTC|cn|https://mirrors.ustc.edu.cn/pypi/simple|https://mirrors.ustc.edu.cn/pypi/simple/pip/' \
+                'tencent|Tencent Cloud|cn|https://mirrors.cloud.tencent.com/pypi/simple|https://mirrors.cloud.tencent.com/pypi/simple/pip/' \
+                'huawei|Huawei Cloud|cn|https://mirrors.huaweicloud.com/repository/pypi/simple|https://mirrors.huaweicloud.com/repository/pypi/simple/pip/' \
+                'sjtu|SJTU|cn|https://mirror.sjtu.edu.cn/pypi/web/simple|https://mirror.sjtu.edu.cn/pypi/web/simple/pip/' \
+                '163|NetEase 163|cn|https://mirrors.163.com/pypi/simple|https://mirrors.163.com/pypi/simple/pip/'
             ;;
         aur)
             printf '%s\n' \
-                'official|Arch User Repository|https://aur.archlinux.org|https://aur.archlinux.org/yay.git/info/refs?service=git-upload-pack'
+                'official|Arch User Repository|global|https://aur.archlinux.org|https://aur.archlinux.org/yay.git/info/refs?service=git-upload-pack' \
+                'tuna|Tsinghua AUR mirror|cn|https://aur.tuna.tsinghua.edu.cn|https://aur.tuna.tsinghua.edu.cn/yay.git/info/refs?service=git-upload-pack'
             ;;
         flatpak)
             printf '%s\n' \
-                'flathub|Flathub|https://flathub.org/repo/flathub.flatpakrepo|https://flathub.org/repo/flathub.flatpakrepo'
+                'flathub|Flathub|global|https://flathub.org/repo/flathub.flatpakrepo|https://flathub.org/repo/flathub.flatpakrepo' \
+                'sjtu|SJTU Flathub|cn|https://mirror.sjtu.edu.cn/flathub|https://mirror.sjtu.edu.cn/flathub/repo/flathub.flatpakrepo'
             ;;
         go)
             printf '%s\n' \
-                'official|Go proxy official|https://proxy.golang.org|https://proxy.golang.org/github.com/golang/example/@v/list' \
-                'goproxy-cn|goproxy.cn|https://goproxy.cn|https://goproxy.cn/github.com/golang/example/@v/list'
+                'official|Go proxy official|global|https://proxy.golang.org|https://proxy.golang.org/github.com/golang/example/@v/list' \
+                'goproxy-cn|goproxy.cn|cn|https://goproxy.cn|https://goproxy.cn/github.com/golang/example/@v/list' \
+                'goproxy-io|goproxy.io|global|https://goproxy.io|https://goproxy.io/github.com/golang/example/@v/list' \
+                'aliyun|Alibaba Cloud Go|cn|https://mirrors.aliyun.com/goproxy/|https://mirrors.aliyun.com/goproxy/github.com/golang/example/@v/list'
             ;;
         *) error "Unknown mirror type: $1 (use arch/npm/pip/aur/flatpak/go)" ;;
     esac
 }
 
 mirror_resolve() {
-    local type=$1 selector=$2 id name url probe
+    local type=$1 selector=$2 id name country url probe
     if [[ $selector == https://* ]]; then
         printf '%s|%s\n' "${selector%/}" "${selector%/}"
         return
     fi
-    while IFS='|' read -r id name url probe; do
+    while IFS='|' read -r id name country url probe; do
         if [[ $id == "$selector" ]]; then
             printf '%s|%s\n' "$url" "$probe"
             return
@@ -237,10 +254,10 @@ mirror_current() {
 }
 
 mirror_list() {
-    local type=${1:-arch} id name url probe
+    local type=${1:-arch} id name country url probe
     header "${type^^} Sources"
-    while IFS='|' read -r id name url probe; do
-        printf '  %-10s %-22s %s\n' "$id" "$name" "$url"
+    while IFS='|' read -r id name country url probe; do
+        printf '  %-10s %-22s %-7s %s\n' "$id" "$name" "[$country]" "$url"
     done < <(mirror_records "$type")
     if [[ $type == aur ]]; then
         printf '  %-10s %-22s %s\n' custom 'Configured custom URL' "$(mirror_current aur)"
@@ -253,25 +270,29 @@ mirror_list() {
 
 mirror_probe() {
     local probe=$1 result code seconds
+    # Note: on MSYS/git-bash, curl may emit write errors to /dev/null inside
+    # command substitution; we trust only the --write-out HTTP code.
     result=$(curl --location --silent --show-error --output /dev/null \
         --connect-timeout 4 --max-time 12 --retry 1 --retry-all-errors \
         --write-out '%{http_code} %{time_total}' \
-        "$probe" 2>/dev/null) || return 1
-    read -r code seconds <<<"$result"
+        "$probe" 2>/dev/null)
+    code=${result%% *}
+    seconds=${result#* }
     [[ $code =~ ^(2|3)[0-9][0-9]$ ]] || return 1
+    [[ $seconds =~ ^[0-9.]+$ ]] || seconds=0
     awk -v seconds="$seconds" 'BEGIN { printf "%.0f ms", seconds * 1000 }'
 }
 
 mirror_speed() {
-    local type=${1:-arch} selector=${2:-} id name url probe latency
+    local type=${1:-arch} selector=${2:-} id name country url probe latency
     command -v curl >/dev/null || error "curl is required for mirror testing"
     header "Testing ${type^^} Sources"
-    while IFS='|' read -r id name url probe; do
+    while IFS='|' read -r id name country url probe; do
         [[ -z $selector || $id == "$selector" ]] || continue
         if latency=$(mirror_probe "$probe"); then
-            printf '  %-10s %-22s %s\n' "$id" "$name" "$latency"
+            printf '  %-10s %-22s %-7s %s\n' "$id" "$name" "[$country]" "$latency"
         else
-            printf '  %-10s %-22s %s\n' "$id" "$name" 'unreachable'
+            printf '  %-10s %-22s %-7s %s\n' "$id" "$name" "[$country]" 'unreachable'
         fi
     done < <(mirror_records "$type")
     if [[ -n $selector && $selector == https://* ]]; then
@@ -283,6 +304,37 @@ mirror_speed() {
             error "The custom URL did not pass its connectivity check"
         fi
     fi
+}
+
+# mirror_auto: probe every source, pick the fastest reachable one, and apply it.
+# Prints a comparison table and writes the winner with mirror_set (sudo for arch).
+mirror_auto() {
+    local type=${1:-} best_id="" best_ms=999999 id name country url probe latency ms
+    [[ -n $type ]] || error "Specify a mirror type: linxira-config mirror <type> auto"
+    case "$type" in
+        arch|npm|pip|aur|flatpak|go) ;;
+        *) error "Unknown mirror type: $type (use arch/npm/pip/aur/flatpak/go)" ;;
+    esac
+    command -v curl >/dev/null || error "curl is required for mirror testing"
+    command -v sort >/dev/null || error "sort is required for mirror selection"
+    header "Auto-selecting fastest ${type^^} source"
+    while IFS='|' read -r id name country url probe; do
+        if latency=$(mirror_probe "$probe"); then
+            printf '  %-10s %-22s %-7s %s\n' "$id" "$name" "[$country]" "$latency"
+            ms=${latency% *}
+            if [[ $ms =~ ^[0-9]+$ ]] && ((ms < best_ms)); then
+                best_ms=$ms
+                best_id=$id
+            fi
+        else
+            printf '  %-10s %-22s %-7s %s\n' "$id" "$name" "[$country]" 'unreachable'
+        fi
+    done < <(mirror_records "$type")
+    if [[ -z $best_id ]]; then
+        error "No reachable $type source found; check your network connection"
+    fi
+    success "Fastest source: $best_id (${best_ms} ms) — applying"
+    mirror_set "$type" "$best_id"
 }
 
 aur_set_git_url() {
@@ -1537,24 +1589,17 @@ case "${1:-help}" in
         case "${2:-arch}" in
             list) mirror_list arch ;;
             speed) mirror_speed arch "${3:-}" ;;
-            set|reset) backend_pending ;;
+            auto) mirror_auto arch ;;
+            set) mirror_set arch "${3:-}" ;;
+            reset) mirror_reset arch ;;
             arch|npm|pip|aur|flatpak|go)
                 case "${3:-list}" in
                     list) mirror_list "$2" ;;
                     speed) mirror_speed "$2" "${4:-}" ;;
-                    set|reset)
-                        case "$2" in
-                            arch|flatpak) backend_pending ;;
-                            *)
-                                if [[ ${3:-} == set ]]; then
-                                    mirror_set "$2" "${4:-}"
-                                else
-                                    mirror_reset "$2"
-                                fi
-                                ;;
-                        esac
-                        ;;
-                    *) error "Unknown mirror action: ${3:-} (use list/speed/set/reset)" ;;
+                    auto) mirror_auto "$2" ;;
+                    set) mirror_set "$2" "${4:-}" ;;
+                    reset) mirror_reset "$2" ;;
+                    *) error "Unknown mirror action: ${3:-} (use list/speed/auto/set/reset)" ;;
                 esac
                 ;;
             *) error "Unknown mirror type: ${2:-} (use arch/npm/pip/aur/flatpak/go)" ;;
@@ -1573,20 +1618,13 @@ case "${1:-help}" in
         case "${2:-status}" in
             status) security_status ;;
             harden) backend_pending ;;
-            ufw)
-                if [[ ${3:-status} == status ]]; then
-                    ufw_manage status
-                else
-                    backend_pending
-                fi
-                ;;
+            ufw) ufw_manage "${3:-status}" "${4:-}" ;;
             *) error "Unknown security action: ${2:-} (use status/harden/ufw)" ;;
         esac
         ;;
     ssh)
         case "${2:-status}" in
-            on|off|port) backend_pending ;;
-            status|key|authorized) ssh_manage "${@:2}" ;;
+            on|off|status|port|key|authorized) ssh_manage "${@:2}" ;;
             *) error "Unknown SSH action: ${2:-}" ;;
         esac
         ;;
@@ -1617,13 +1655,7 @@ case "${1:-help}" in
         case "${2:-help}" in
             diag) net_diag ;;
             fix) backend_pending ;;
-            dns)
-                if [[ ${3:-show} == show ]]; then
-                    net_dns show
-                else
-                    backend_pending
-                fi
-                ;;
+            dns) net_dns "${3:-show}" "${4:-}" ;;
             *) error "Unknown net action: ${2:-} (use diag/fix/dns)" ;;
         esac
         ;;

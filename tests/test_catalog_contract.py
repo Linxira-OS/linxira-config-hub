@@ -103,7 +103,7 @@ class CatalogContractTests(unittest.TestCase):
     def test_help_examples_do_not_advertise_disabled_mutations(self):
         script = CLI.read_text(encoding="utf-8")
         examples = script.split("${BOLD}Examples:${NC}", 1)[1].split("EOF", 1)[0]
-        for disabled in ("security harden", "ssh on", "rdp on", "virt kvm-on", "net fix"):
+        for disabled in ("security harden", "rdp on", "virt kvm-on", "net fix"):
             self.assertNotIn(disabled, examples)
         self.assertIn("runtime status", examples)
         self.assertIn("mirror arch list", examples)
@@ -123,15 +123,10 @@ class CatalogContractTests(unittest.TestCase):
     def test_unsafe_system_mutations_fail_closed_at_dispatch(self):
         commands = (
             ("net", "fix"),
-            ("net", "dns", "set", "1.1.1.1"),
             ("security", "harden"),
-            ("security", "ufw", "on"),
             ("service", "ssh", "on"),
-            ("ssh", "port", "2222"),
             ("virt", "docker-on"),
             ("power", "nosleep"),
-            ("mirror", "arch", "set", "official"),
-            ("mirror", "flatpak", "reset"),
             ("rdp", "off"),
         )
         for arguments in commands:
@@ -144,6 +139,32 @@ class CatalogContractTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(
+                    "disabled until the Linxira system transaction backend",
+                    result.stdout,
+                )
+
+    @unittest.skipUnless(shutil.which("bash"), "bash is not available")
+    def test_config_mutations_are_now_dispatched_not_gated(self):
+        # Config-class commands were decoupled from the transaction backend:
+        # they must reach their implementation (never hit the backend_pending
+        # gate). Under root they may actually succeed; as a non-root user they
+        # must fail with a permission error instead.
+        commands = (
+            ("net", "dns", "set", "1.1.1.1"),
+            ("security", "ufw", "on"),
+            ("ssh", "port", "2222"),
+            ("mirror", "arch", "set", "official"),
+            ("mirror", "flatpak", "reset"),
+        )
+        for arguments in commands:
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    ["bash", "cli/linxira-config", *arguments],
+                    cwd=CLI.parents[1],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotIn(
                     "disabled until the Linxira system transaction backend",
                     result.stdout,
                 )
