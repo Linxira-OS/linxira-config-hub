@@ -526,6 +526,11 @@ headless_manage() {
             systemctl set-default multi-user.target >/dev/null 2>&1
             success "无头模式已开启: 下次启动桌面不加载"
             if [ "${2:-now}" = "now" ]; then
+                # 2026-08-13: 立即切换会终止当前桌面会话, 交互确认防止未保存数据丢失
+                if [ -t 0 ]; then
+                    read -rp "立即切换将退出桌面会话(未保存的数据会丢失)。继续? [y/N] " confirm
+                    [[ "${confirm,,}" =~ ^y ]] || { success "已取消, 桌面将在下次启动时不加载"; return 0; }
+                fi
                 systemctl isolate multi-user.target >/dev/null 2>&1
                 success "已立即切换到无头模式 (桌面已停止, 内存全给计算)"
             fi
