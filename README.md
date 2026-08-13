@@ -80,6 +80,25 @@ Security notes: disable `PasswordAuthentication` in
 firewall on. See the full tutorial at
 <https://linxira-os.github.io/docs/remote-access/> (or `/zh/docs/remote-access/`).
 
+## Headless mode (desktop ⇄ server, runtime switch)
+
+`headless on/off/status` switches the running system between the KDE desktop
+and a headless server state, freeing the memory the desktop would otherwise
+consume for computation tasks:
+
+```console
+linxira-config headless on       # desktop disabled from next boot
+linxira-config headless on now   # switch immediately (interactive confirm)
+linxira-config headless off      # restore desktop from next boot
+linxira-config headless off now  # switch back immediately
+linxira-config headless status   # current target (multi-user vs graphical)
+```
+
+`on now` stops the display manager and terminates the current desktop session
+(unsaved data is lost — the CLI asks for confirmation on a TTY). The switch is
+`systemctl isolate multi-user.target`; the reverse restarts SDDM. Use SSH or a
+TTY to switch back.
+
 ## SSH keys
 
 `ssh key list/show/fingerprint/generate/remove` manages named Ed25519 key pairs

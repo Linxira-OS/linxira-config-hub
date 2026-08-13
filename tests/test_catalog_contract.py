@@ -8,6 +8,18 @@ CLI = Path(__file__).parents[1] / "cli/linxira-config"
 
 
 class CatalogContractTests(unittest.TestCase):
+    def test_headless_mode_commands_switch_systemd_targets(self):
+        # 2026-08-13: 桌面⇄无头快速切换(运行时释放内存)
+        script = CLI.read_text(encoding="utf-8")
+        self.assertIn("systemctl set-default multi-user.target", script)
+        self.assertIn("systemctl isolate multi-user.target", script)
+        self.assertIn("systemctl set-default graphical.target", script)
+        self.assertIn("systemctl isolate graphical.target", script)
+        self.assertIn("systemctl get-default", script)
+        # 立即切换必须交互确认(防未保存数据丢失)
+        self.assertIn("立即切换将退出桌面会话", script)
+        self.assertIn("read -rp", script)
+
     def test_cli_consumes_catalog_v3_and_retains_v2_compatibility(self):
         script = CLI.read_text(encoding="utf-8")
         self.assertIn("catalog-v3.json", script)
