@@ -473,25 +473,36 @@ timeshift_manage() {
         enable)
             require_root
             if command -v timeshift >/dev/null 2>&1; then
-                install -Dm644 /usr/share/linxira/timeshift/timeshift.json /etc/timeshift/timeshift.json 2>/dev/null \
-                    || install -Dm644 /etc/timeshift/timeshift.json.template /etc/timeshift/timeshift.json 2>/dev/null || true
-                install -Dm644 /usr/share/linxira/timeshift/linxira-timeshift-autosnap.hook /usr/share/libalpm/hooks/linxira-timeshift-autosnap.hook 2>/dev/null || true
-                if systemctl list-unit-files grub-btrfsd.service >/dev/null 2>&1; then
-                    systemctl enable --now grub-btrfsd.service >/dev/null 2>&1 || true
+                if [ -f /usr/share/linxira/timeshift/linxira-timeshift-enable.sh ]; then
+                    sh /usr/share/linxira/timeshift/linxira-timeshift-enable.sh \
+                        && success "Timeshift 已启用: 配置 + 更新前自动快照 + GRUB 快照菜单 + 初始快照" \
+                        || warn "启用脚本未完整执行, 请检查上方 [linxira-timeshift] 输出"
+                else
+                    install -Dm644 /usr/share/linxira/timeshift/timeshift.json /etc/timeshift/timeshift.json 2>/dev/null \
+                        || install -Dm644 /etc/timeshift/timeshift.json.template /etc/timeshift/timeshift.json 2>/dev/null || true
+                    install -Dm644 /usr/share/linxira/timeshift/linxira-timeshift-autosnap.hook /etc/pacman.d/hooks/linxira-timeshift-autosnap.hook 2>/dev/null || true
+                    if [ -f /usr/lib/systemd/system/grub-btrfsd.service ]; then
+                        mkdir -p /etc/systemd/system/grub-btrfsd.service.d
+                        printf '%s\n' '[Service]' 'ExecStart=' \
+                            'ExecStart=/usr/bin/grub-btrfsd --syslog --timeshift-auto' \
+                            > /etc/systemd/system/grub-btrfsd.service.d/linxira-timeshift.conf
+                        systemctl daemon-reload >/dev/null 2>&1 || true
+                        systemctl enable --now grub-btrfsd.service >/dev/null 2>&1 || true
+                    fi
+                    if [ ! -f /etc/timeshift/timeshift.json ]; then
+                        warn "未找到 timeshift 配置模板, 使用 timeshift 默认配置"
+                    fi
+                    timeshift --create --comments "linxira-config enable 初始快照" >/dev/null 2>&1 \
+                        && success "Timeshift 已启用: 每日 3 份 + 启动 3 份, 更新前自动快照, 首个快照已创建" \
+                        || success "Timeshift 已启用: 配置已应用 (快照创建需 btrfs/rsync 模式就绪)"
                 fi
-                if [ ! -f /etc/timeshift/timeshift.json ]; then
-                    warn "未找到 timeshift 配置模板, 使用 timeshift 默认配置"
-                fi
-                timeshift --create --comments "linxira-config enable 初始快照" >/dev/null 2>&1 \
-                    && success "Timeshift 已启用: 每日 3 份 + 启动 3 份, 更新前自动快照, 首个快照已创建" \
-                    || success "Timeshift 已启用: 配置已应用 (快照创建需 btrfs/rsync 模式就绪)"
             else
                 error "timeshift 未安装, 请先: sudo pacman -S timeshift"
             fi
             ;;
         disable)
             require_root
-            rm -f /usr/share/libalpm/hooks/linxira-timeshift-autosnap.hook
+            rm -f /etc/pacman.d/hooks/linxira-timeshift-autosnap.hook /usr/share/libalpm/hooks/linxira-timeshift-autosnap.hook
             if systemctl list-unit-files grub-btrfsd.service >/dev/null 2>&1; then
                 systemctl disable --now grub-btrfsd.service >/dev/null 2>&1 || true
             fi
@@ -501,7 +512,7 @@ timeshift_manage() {
             if command -v timeshift >/dev/null 2>&1; then
                 echo "Timeshift 版本: $(timeshift --version 2>/dev/null | head -1 || echo 未知)"
                 [ -f /etc/timeshift/timeshift.json ] && echo "配置: 已应用 (每日 3 份 + 启动 3 份)" || echo "配置: 未启用 (运行 linxira-config timeshift enable)"
-                [ -f /usr/share/libalpm/hooks/linxira-timeshift-autosnap.hook ] && echo "更新前自动快照: 已启用" || echo "更新前自动快照: 未启用"
+                [ -f /etc/pacman.d/hooks/linxira-timeshift-autosnap.hook ] && echo "更新前自动快照: 已启用" || echo "更新前自动快照: 未启用"
                 systemctl is-active grub-btrfsd.service >/dev/null 2>&1 && echo "GRUB 快照菜单(grub-btrfsd): 运行中" || echo "GRUB 快照菜单(grub-btrfsd): 未运行"
                 timeshift --list 2>/dev/null | tail -5 || true
             else
