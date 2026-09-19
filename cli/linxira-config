@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.1"
+VERSION="2.2.2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
@@ -80,7 +80,7 @@ ${BOLD}Commands:${NC}
   virt <action>         Virtualization (KVM/QEMU/Docker)
   power <action>        Power status and disabled sleep/suspend mutations
   catalog <kind>        Query software/component/bundle state
-  runtime <action>       Runtime and package-manager status
+  runtime <action>      Runtime and package-manager status
   conda channels <act>  Miniforge channel configuration
   timeshift <action>    Timeshift quick setup (enable/disable/status)
   headless <action>     Headless server mode (on/off/status)
@@ -98,7 +98,8 @@ ${BOLD}Security:${NC}
   linxira-config security ufw allow <port>   Allow a TCP port through UFW
 
 ${BOLD}SSH:${NC}
-  linxira-config ssh on|off            Enable/disable SSH server
+  linxira-config ssh on|off            Disabled pending transactional backend
+                                       (use: sudo systemctl enable --now sshd)
   linxira-config ssh status            Show SSH status & connection info
   linxira-config ssh port <number>     Change SSH port
   linxira-config ssh key list                    List public keys
@@ -117,10 +118,10 @@ ${BOLD}Catalog (read-only):${NC}
   linxira-config catalog <kind> show <id>
 
 ${BOLD}Remote Desktop:${NC}
-  linxira-config rdp on                RDP status (enablement pending signed xrdp)
-  linxira-config rdp off               Disabled pending transactional backend
-  linxira-config rdp vnc-on            VNC status (enablement pending session policy)
-  linxira-config rdp vnc-off           Disabled pending transactional backend
+  linxira-config rdp on|off            Disabled pending transactional backend
+                                       (xrdp not yet in signed repositories)
+  linxira-config rdp vnc-on|vnc-off    Disabled pending transactional backend
+                                       (per-user TigerVNC session policy pending)
 
 ${BOLD}Virtualization:${NC}
   linxira-config virt status           Check virtualization support
@@ -805,8 +806,9 @@ security_status() {
         info "KVM: NOT AVAILABLE"
     fi
 
-    # Automatic updates
-    if systemctl is-active pacman-contrib 2>/dev/null || systemctl is-active archlinux-contrib.timer 2>/dev/null; then
+    # Automatic updates (Linxira's own timer, then pacman-contrib's paccache.timer)
+    if systemctl is-active --quiet linxira-update.timer 2>/dev/null || \
+       systemctl is-active --quiet paccache.timer 2>/dev/null; then
         success "Auto-updates: ACTIVE"
     else
         warn "Auto-updates: INACTIVE"
@@ -850,7 +852,7 @@ maxretry = 5
 bantime = 3600
 JAIL
     systemctl enable --now fail2ban
-    success "fail2ban configured (SSH: 3 retries -> 24h ban)"
+    success "fail2ban configured (SSH: 5 retries -> 1h ban)"
 
     # 3. Kernel hardening
     info "Applying kernel hardening..."
@@ -1205,7 +1207,13 @@ ssh_manage() {
             [ -z "$port" ] && error "Please specify a port number"
             validate_port "$port"
             require_root
-            sudo sed -i "s/^#\?Port .*/Port $port/" /etc/ssh/sshd_config
+            # sshd_config 可能没有任何 Port 行（最小化配置）：有则替换，无则追加，
+            # 避免 sed 无匹配时静默失效却报成功。
+            if sudo grep -qE '^#?[[:space:]]*Port[[:space:]]+' /etc/ssh/sshd_config; then
+                sudo sed -i -E "s/^#?[[:space:]]*Port[[:space:]].*/Port $port/" /etc/ssh/sshd_config
+            else
+                printf 'Port %s\n' "$port" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+            fi
             if command -v ufw &>/dev/null && sudo ufw status | grep -q "active"; then
                 sudo ufw allow "$port/tcp"
             fi
@@ -1735,7 +1743,10 @@ case "${1:-help}" in
         ;;
     ssh)
         case "${2:-status}" in
-            on|off|status|port|key|authorized) ssh_manage "${@:2}" ;;
+            # ssh on/off 是系统级变更（enable sshd + 防火墙），与其他 mutation
+            # 一致门控在事务后端之后（见 README SSH quick start 的声明）。
+            on|off|enable|disable|start|stop) backend_pending ;;
+            status|port|key|authorized) ssh_manage "${@:2}" ;;
             *) error "Unknown SSH action: ${2:-}" ;;
         esac
         ;;
