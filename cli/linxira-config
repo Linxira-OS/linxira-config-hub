@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.2"
+VERSION="2.3.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
@@ -72,6 +72,7 @@ ${BOLD}Usage:${NC} linxira-config <command> [action] [options]
 
 ${BOLD}Commands:${NC}
   mirror <action>       Package mirror management
+  logs <action>         Diagnostic log collect & upload (collect/upload)
   source                Show package sources
   service <svc> <act>   Disabled pending transactional backend
   security <action>     Security hardening & firewall
@@ -110,6 +111,10 @@ ${BOLD}SSH:${NC}
   linxira-config ssh authorized list              List authorized keys
   linxira-config ssh authorized add <public-key>  Add one plain public key
   linxira-config ssh authorized remove <fingerprint> --yes
+
+${BOLD}Logs (diagnostics):${NC}
+  linxira-config logs collect          收集诊断日志到 ~/linxira-logs/
+  linxira-config logs upload [file]    上传日志并返回分享链接(0x0.st/termbin)
 
 ${BOLD}Catalog (read-only):${NC}
   linxira-config catalog software [list] [--all|--status <state>]
@@ -1701,6 +1706,82 @@ quick_status() {
     echo "  Run 'linxira-config help' for all commands."
 }
 
+# ─── Logs: 诊断日志收集与快速分享 ────────────────────────────
+
+LOGS_DIR="${HOME}/linxira-logs"
+
+logs_collect() {
+    mkdir -p "$LOGS_DIR"
+    local out="$LOGS_DIR/linxira-logs-$(date +%Y%m%d-%H%M%S).txt"
+    {
+        echo "=== Linxira OS diagnostic bundle ==="
+        echo "=== date: $(date -Is) | kernel: $(uname -r) ==="
+        echo
+        echo "─── system ───"
+        grep -E "^(NAME|PRETTY_NAME)=" /etc/os-release 2>/dev/null
+        lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT 2>/dev/null
+        df -h / 2>/dev/null
+        echo
+        echo "─── pacman repositories ───"
+        grep -E "^\[|Server" /etc/pacman.conf 2>/dev/null
+        echo
+        echo "─── installed linxira packages ───"
+        pacman -Q 2>/dev/null | grep -i linxira
+        echo
+        echo "─── failed units ───"
+        systemctl --failed --no-pager 2>/dev/null
+        echo
+        echo "─── calamares installer log (tail) ───"
+        local f
+        for f in /root/.cache/calamares/*.log /home/*/.cache/calamares/*.log /var/log/installation.log; do
+            if [ -f "$f" ]; then
+                echo "--- $f (last 400 lines) ---"
+                tail -n 400 "$f" 2>/dev/null
+            fi
+        done
+        echo
+        echo "─── pacman.log (tail) ───"
+        tail -n 300 /var/log/pacman.log 2>/dev/null
+        echo
+        echo "─── journal errors (this boot, tail) ───"
+        journalctl -b -p err --no-pager 2>/dev/null | tail -n 200
+    } > "$out"
+    printf '%s\n' "已收集诊断日志: $out"
+    printf '%s\n' "查看内容:   less $out"
+    printf '%s\n' "上传分享:   linxira-config logs upload $out"
+}
+
+logs_upload() {
+    local file=${1:-}
+    if [ -z "$file" ]; then
+        file=$(ls -1t "$LOGS_DIR"/linxira-logs-*.txt 2>/dev/null | head -1)
+    fi
+    if [ -z "$file" ] || [ ! -f "$file" ]; then
+        error "没有可上传的日志文件(先运行: linxira-config logs collect)"
+        return 1
+    fi
+    [ "$(id -u)" -eq 0 ] && chmod a+r -- "$file" 2>/dev/null
+    local url
+    printf '%s\n' "上传中(0x0.st, 保留约30天)..."
+    url=$(curl -fsS --max-time 90 -A "linxira-config/${VERSION}" -F "file=@${file}" https://0x0.st 2>/dev/null)
+    if [ -n "$url" ]; then
+        printf '%s\n' "日志已上传, 把下面的链接发给我们即可:"
+        printf '  %s\n' "$url"
+        return 0
+    fi
+    printf '%s\n' "0x0.st 不可达, 尝试 termbin 备用通道..."
+    if command -v nc >/dev/null 2>&1; then
+        url=$(nc termbin.com 9999 < "$file" 2>/dev/null | tr -d '\r\n')
+        if [ -n "$url" ]; then
+            printf '%s\n' "日志已上传(termbin), 把下面的链接发给我们即可:"
+            printf '  %s\n' "$url"
+            return 0
+        fi
+    fi
+    error "上传失败: 检查网络后重试, 或直接把日志文件内容复制发给我们 ($file)"
+    return 1
+}
+
 # ─── Main Dispatch ───────────────────────────────────────────
 
 case "${1:-help}" in
@@ -1722,6 +1803,13 @@ case "${1:-help}" in
                 esac
                 ;;
             *) error "Unknown mirror type: ${2:-} (use arch/npm/pip/aur/flatpak/go)" ;;
+        esac
+        ;;
+    logs)
+        case "${2:-collect}" in
+            collect) logs_collect ;;
+            upload) logs_upload "${3:-}" ;;
+            *) logs_collect ;;
         esac
         ;;
     source)
