@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.3.0"
+VERSION="2.3.2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
@@ -99,8 +99,7 @@ ${BOLD}Security:${NC}
   linxira-config security ufw allow <port>   Allow a TCP port through UFW
 
 ${BOLD}SSH:${NC}
-  linxira-config ssh on|off            Disabled pending transactional backend
-                                       (use: sudo systemctl enable --now sshd)
+  linxira-config ssh on|off            Enable/disable remote SSH access (installs openssh,\n                                       enables sshd, allows password auth)
   linxira-config ssh status            Show SSH status & connection info
   linxira-config ssh port <number>     Change SSH port
   linxira-config ssh key list                    List public keys
@@ -1782,9 +1781,64 @@ logs_upload() {
     return 1
 }
 
+# 2026-09-22: 终端回退链 —— cosmic-term(Arch 包名 cosmic-terminal) -> konsole -> xterm。
+# Config CLI 是交互式菜单, 终端随进程存活, 不需要 hold。
+launch_config_terminal() {
+	local terminal
+	for terminal in /usr/bin/cosmic-term /usr/bin/konsole /usr/bin/xterm; do
+		[ -x "${terminal}" ] || continue
+		case "${terminal}" in
+			*cosmic-term)
+				setsid "${terminal}" -e linxira-config > /dev/null 2>&1 &
+			;;
+			*konsole)
+				setsid "${terminal}" --hold -e linxira-config > /dev/null 2>&1 &
+			;;
+			*)
+				setsid "${terminal}" -hold -e linxira-config > /dev/null 2>&1 &
+			;;
+		esac
+		return 0
+	done
+	error "没有找到可用终端 (cosmic-term / konsole / xterm)"
+	return 1
+}
+
+# 2026-09-22: ssh on —— 一条命令开通远程访问: 装 openssh、开机自启、
+# 显式放行密码连接、防火墙放行, 并打印连接地址。交互式 sudo 只问一次密码。
+ssh_on() {
+    require_root
+    if ! command -v sshd &> /dev/null; then
+        info "Installing openssh..."
+        sudo pacman -S --needed --noconfirm openssh
+    fi
+    sudo install -Dm644 /dev/null /etc/ssh/sshd_config.d/10-linxira.conf
+    printf 'PasswordAuthentication yes\n' | sudo tee /etc/ssh/sshd_config.d/10-linxira.conf > /dev/null
+    sudo systemctl enable --now sshd
+    if systemctl is-active --quiet ufw 2> /dev/null; then
+        sudo ufw allow ssh > /dev/null 2>&1 || true
+    fi
+    local ip user
+    user="${SUDO_USER:-$(whoami)}"
+    ip=$(hostname -I 2> /dev/null | awk '{print $1}')
+    success "SSH remote access enabled"
+    echo "  ${BOLD}Connect:${NC} ssh ${user}@${ip:-<this-machine-ip>}"
+}
+
+ssh_off() {
+    require_root
+    sudo systemctl disable --now sshd
+    success "SSH remote access disabled"
+}
+
 # ─── Main Dispatch ───────────────────────────────────────────
 
 case "${1:-help}" in
+    --launch)
+        # 2026-09-22: 桌面入口调用 —— 在可用终端中承载交互式配置菜单。
+        # COSMIC 的终端包名是 cosmic-terminal, 二进制是 cosmic-term。
+        launch_config_terminal
+        ;;
     mirror)
         case "${2:-arch}" in
             list) mirror_list arch ;;
@@ -1831,9 +1885,12 @@ case "${1:-help}" in
         ;;
     ssh)
         case "${2:-status}" in
-            # ssh on/off 是系统级变更（enable sshd + 防火墙），与其他 mutation
-            # 一致门控在事务后端之后（见 README SSH quick start 的声明）。
-            on|off|enable|disable|start|stop) backend_pending ;;
+            # 2026-09-22: ssh on/off 落地(用户决策: 远程接入必须一条命令可用);
+            # 事务后端门控继续覆盖 security harden 等其他 mutation。
+            on|enable) ssh_on ;;
+            off|disable) ssh_off ;;
+            start) require_root; sudo systemctl start sshd; success "sshd started" ;;
+            stop) require_root; sudo systemctl stop sshd; success "sshd stopped" ;;
             status|port|key|authorized) ssh_manage "${@:2}" ;;
             *) error "Unknown SSH action: ${2:-}" ;;
         esac

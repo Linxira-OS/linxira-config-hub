@@ -45,13 +45,13 @@ managed or pending states using this fixed shape:
 
 ## SSH quick start (turn this machine into a server)
 
-Enable and start the SSH daemon (current test builds gate `ssh on/off` behind
-the pending transactional backend, so use the equivalent command):
+One command sets up remote access (installs `openssh` if missing, enables and
+starts `sshd`, explicitly allows password authentication, opens the firewall
+when UFW is active, and prints the connection line):
 
 ```console
-sudo systemctl enable --now sshd
-sudo ufw allow ssh          # only if UFW is active
-linxira-config ssh status   # verify: Service state: active
+sudo linxira-config ssh on   # prints: Connect: ssh <user>@<ip>
+linxira-config ssh status    # verify: SSH server: RUNNING
 ```
 
 Generate a key pair on the client you connect *from*:

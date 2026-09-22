@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Linxira Config
+Name[zh_CN]=Linxira 配置中心
+GenericName=System Configuration CLI
+GenericName[zh_CN]=系统配置命令行
+Comment=Configure sources, runtime, SSH and network
+Comment[zh_CN]=配置软件源、运行时、SSH 与网络
+Exec=linxira-config --launch
+Icon=utilities-terminal
+Terminal=false
+Categories=System;Settings;Utility;
+Keywords=linxira;config;mirror;ssh;pip;npm;
+StartupNotify=false
