@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.3.2"
+VERSION="2.4.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
@@ -84,12 +84,27 @@ ${BOLD}Commands:${NC}
   runtime <action>      Runtime and package-manager status
   conda channels <act>  Miniforge channel configuration
   timeshift <action>    Timeshift quick setup (enable/disable/status)
+  workspace-guard <act> Workspace guard setup & state (enable/disable/status/handbook)
   headless <action>     Headless server mode (on/off/status)
   gpu <action>          GPU driver management
   net <action>          Network diagnostics & fixes
   info                  Show system information
   status                Show a quick system status summary
   help                  Show this help
+
+${BOLD}Workspace Guard:${NC}
+  linxira-config workspace-guard status            Show guard configuration, store and timer state
+  linxira-config workspace-guard status --json     Same, as one line of JSON
+  sudo linxira-config workspace-guard enable      Pick a disk, create the ext4 store, register, start the timer
+  sudo linxira-config workspace-guard disable     Stop the timer, keep every stored recovery point
+  linxira-config workspace-guard handbook         Print the AI-readable handbook manifest
+  linxira-components guard <status|list|snapshot|restore>  Day-to-day guard operations
+
+${BOLD}Machine-readable output (--json):${NC}
+  linxira-config workspace-guard status --json
+  linxira-config ssh status --json
+  linxira-config net diag --json
+  linxira-config mirror arch list --json
 
 ${BOLD}Security:${NC}
   linxira-config security status       Show security posture
@@ -262,6 +277,19 @@ mirror_current() {
 
 mirror_list() {
     local type=${1:-arch} id name country url probe
+    if [ "${2:-}" = "--json" ]; then
+        # 单行 JSON: 候选源是结构化数据, 不需要人读的表格。
+        local rows='[]'
+        while IFS='|' read -r id name country url probe; do
+            rows=$(jq -nc --argjson rows "$rows" --arg id "$id" --arg name "$name" \
+                --arg country "$country" --arg url "$url" \
+                '$rows + [{id: $id, name: $name, country: $country, url: $url}]')
+        done < <(mirror_records "$type")
+        jq -nc --arg type "$type" --arg current "$(mirror_current "$type")" \
+            --argjson sources "$rows" \
+            '{type: $type, current: (if $current == "" then null else $current end), sources: $sources}'
+        return 0
+    fi
     header "${type^^} Sources"
     while IFS='|' read -r id name country url probe; do
         printf '  %-10s %-22s %-7s %s\n' "$id" "$name" "[$country]" "$url"
@@ -530,6 +558,234 @@ timeshift_manage() {
             echo "  disable  关闭自动快照 (保留手动)"
             echo "  status   查看当前状态与快照列表"
             ;;
+    esac
+}
+
+# ─── Workspace Guard ────────────────────────────────────────────
+# 防 agent 用完整用户权限把工作区(含 .git)干掉。分区与仓库由 root 拥有,
+# agent 读不到配置、挂不上备份盘。恢复永远写新目录, 不覆盖原工作区。
+WORKSPACE_GUARD_CONF=/etc/linxira/workspace-guard.conf
+WORKSPACE_GUARD_TIMER=linxira-workspace-guard-snapshot.timer
+
+workspace_guard_configured() {
+    [ -f "$WORKSPACE_GUARD_CONF" ] || return 1
+    grep -qE '^[[:space:]]*store[[:space:]]*=[[:space:]]*[^[:space:]]' "$WORKSPACE_GUARD_CONF" 2>/dev/null
+}
+
+workspace_guard_status_json() {
+    local configured=false readable=true store= present=false workspaces=0 snapshots=0
+    if [ -f "$WORKSPACE_GUARD_CONF" ]; then
+        readable=true
+        workspace_guard_configured 2>/dev/null && configured=true || readable=false
+        store=$(
+            { sed -nE 's/^[[:space:]]*store[[:space:]]*=[[:space:]]*//p' "$WORKSPACE_GUARD_CONF" || true; } \
+            2>/dev/null | head -1
+        )
+        store=${store:-}
+    fi
+    if [ "$configured" = true ] && [ -d "$store" ]; then
+        present=true
+        workspaces=$(find "$store/workspaces" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+        snapshots=$(find "$store/workspaces" -mindepth 2 -maxdepth 2 -type d -name '2*T*Z-*' 2>/dev/null | wc -l)
+    fi
+    local timer=inactive
+    systemctl is-active --quiet "$WORKSPACE_GUARD_TIMER" 2>/dev/null && timer=active
+    local enabled=disabled
+    systemctl is-enabled --quiet "$WORKSPACE_GUARD_TIMER" 2>/dev/null && enabled=enabled
+    jq -nc --argjson configured "$configured" --argjson readable "$readable" \
+        --arg store "$store" --argjson present "$present" \
+        --argjson workspaces "$workspaces" --argjson snapshots "$snapshots" \
+        --arg timer "$timer" --arg enabled "$enabled" \
+        '{configured: $configured, config_readable: $readable,
+          store: (if $store == "" then null else $store end),
+          store_present: $present, workspaces: $workspaces, snapshot_count: $snapshots,
+          timer: $timer, timer_enabled: $enabled}'
+}
+
+workspace_guard_status() {
+    local as_json=false
+    [ "${2:-}" = "--json" ] && as_json=true
+    if $as_json; then
+        workspace_guard_status_json
+        return 0
+    fi
+    header "Workspace Guard"
+    if [ ! -f "$WORKSPACE_GUARD_CONF" ]; then
+        echo "  Configuration: not installed (run: sudo linxira-config workspace-guard enable)"
+        return 0
+    fi
+    if ! workspace_guard_configured 2>/dev/null; then
+        # 配置在但当前用户读不到 —— 这正是设计, 不是权限故障。
+        echo "  Configuration: present but not readable by $(id -un) (root-owned by design)"
+        return 0
+    fi
+    local store
+    store=$(sed -nE 's/^[[:space:]]*store[[:space:]]*=[[:space:]]*//p' "$WORKSPACE_GUARD_CONF" | head -1)
+    echo "  Configuration: enabled"
+    echo "  Store:          ${store:-<unset>}"
+    if [ -d "$store" ]; then
+        echo "  Workspaces:     $(find "$store/workspaces" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+        echo "  Snapshots:      $(find "$store/workspaces" -mindepth 2 -maxdepth 2 -type d -name '2*T*Z-*' 2>/dev/null | wc -l)"
+    else
+        echo "  Store:          not mounted yet (the guard partition is not in fstab by design)"
+    fi
+    systemctl is-active --quiet "$WORKSPACE_GUARD_TIMER" 2>/dev/null \
+        && echo "  Timer:          running (${WORKSPACE_GUARD_TIMER})" \
+        || echo "  Timer:          not running"
+}
+
+workspace_guard_free_space() {
+    df -h --output=source,size,avail,target -x tmpfs -x devtmpfs 2>/dev/null | tail -n +2
+}
+
+workspace_guard_write_config() {
+    local store_path=$1 uuid=$2 keep_scheduled=$3 keep_manual=$4 schedule=$5
+    install -d -m 700 /etc/linxira
+    # 用 umask + 重定向而不是 tee -a: 配置文件从创建那一刻起就是 0600。
+    ( umask 177 && printf '[guard]\nstore_uuid = %s\nstore = %s\nschedule = %s\nkeep_scheduled = %s\nkeep_manual = %s\n' \
+        "$uuid" "$store_path" "$schedule" "$keep_scheduled" "$keep_manual" > "$WORKSPACE_GUARD_CONF" )
+    chmod 600 "$WORKSPACE_GUARD_CONF"
+}
+
+workspace_guard_register_workspaces() {
+    local user_name store_path
+    user_name=$(target_user)
+    store_path=$1
+    local home=/home/$user_name
+    [ -d "$home" ] || home=$(getent passwd "$user_name" | cut -d: -f6)
+    local candidates=("$home/Linxira-OS" "$home/Projects" "$home/work" "$home/src")
+    local registered=0 path
+    for path in "${candidates[@]}"; do
+        [ -d "$path" ] || continue
+        PYTHONPATH=/usr/lib/linxira-components /usr/bin/python -c '
+import sys
+from linxira_components import guard_store
+config = guard_store.read_config()
+outcome = guard_store.register_workspace(config, sys.argv[1])
+print(("registered " if outcome.get("ok") else "skipped ") + sys.argv[1])
+' "$path" 2>/dev/null && registered=$((registered + 1))
+    done
+    echo "$registered"
+}
+
+workspace_guard_enable() {
+    require_root
+    local schedule='*:0/30' keep_scheduled=24 keep_manual=10
+
+    if workspace_guard_configured 2>/dev/null; then
+        info "已配置, 跳过分区步骤 (幂等)"
+    else
+        header "[1/4] 选择守护分区所在磁盘"
+        workspace_guard_free_space
+        local device
+        echo
+        read -r -p "  在哪块盘上创建守护分区 (如 /dev/nvme1n1, 留空取消): " device
+        [ -n "$device" ] || error "未选择设备, 已取消"
+        [ -b "$device" ] || error "不是块设备: $device"
+        if findmnt -n -S "$device" >/dev/null 2>&1; then
+            error "$device 已挂载, 守护分区必须建在未使用的空间上"
+        fi
+
+        header "[2/4] 选择容量"
+        local size
+        echo "  32 / 64 / 128 GB, 或直接输入自定义值"
+        read -r -p "  守护分区大小 [64]: " size
+        size=${size:-64}
+        [[ $size =~ ^[0-9]+$ ]] || error "容量必须是整数 GB: $size"
+        [ "$size" -ge 32 ] || error "守护分区不得小于 32 GB"
+        local size_gib=$((size * 1024))
+
+        header "[3/4] 创建 ext4 守护分区"
+        local partition
+        partition=$(lsblk -nrpo NAME "$device" | tail -n +2 | head -1)
+        [ -n "$partition" ] || partition=$device
+        local part_number
+        part_number=$(lsblk -nrpo NAME "$device" | tail -n +2 | wc -l)
+        [ "$part_number" -gt 0 ] || part_number=1
+        info "在 $partition 上追加第 $part_number 个分区 (${size}G, ext4, label=linxira-guard)"
+        echo "  该操作会修改磁盘分区表, 输入 yes 继续:"
+        read -r -p "  yes: " confirm
+        [ "$confirm" = "yes" ] || error "已取消, 未修改磁盘"
+        if ! sfdisk --no-reread --append "$partition" <<< ",${size_gib}MiB,L" >/dev/null 2>&1; then
+            sfdisk --no-reread --append "$partition" <<< ",+${size}G, L" >/dev/null 2>&1 \
+                || error "创建分区失败, 磁盘未改动"
+        fi
+        partpath --partno "$part_number" "$partition" >/dev/null 2>&1 \
+            || partx -u "$partition" >/dev/null 2>&1 || true
+        local created
+        created=$(partx --show --partno "$part_number" "$partition" 2>/dev/null | tail -1)
+        [ -n "$created" ] || created="${partition}$part_number"
+        udevadm settle >/dev/null 2>&1 || true
+        mkfs.ext4 -q -L linxira-guard "$created" || error "mkfs.ext4 失败"
+        local uuid
+        uuid=$(blkid -s UUID -o value "$created") || error "读取分区 UUID 失败"
+        # 守护盘不写进 fstab: 开机不挂载, 没有 root 就够不着快照。
+        if grep -qF "$created" /etc/fstab 2>/dev/null; then
+            cp /etc/fstab /etc/fstab.linxira-guard.bak
+            sed -i "\\|[[:space:]]$created[[:space:]]|d" /etc/fstab
+            info "已从 /etc/fstab 移除守护盘条目 (备份: /etc/fstab.linxira-guard.bak)"
+        fi
+        workspace_guard_write_config "/var/lib/linxira/guard" "$uuid" "$keep_scheduled" "$keep_manual" "$schedule"
+        success "守护分区已创建并写入 $WORKSPACE_GUARD_CONF (0600, root)"
+        info "已创建的分区不会自动删除 —— 删分区表是破坏性操作, 只能由你显式执行"
+    fi
+
+    header "[4/4] 注册工作区并开启定时器"
+    install -d -m 700 /var/lib/linxira/guard
+    chmod 700 /var/lib/linxira/guard
+    install -d -m 700 /var/lib/linxira/guard/workspaces
+    local registered
+    registered=$(workspace_guard_register_workspaces /var/lib/linxira/guard)
+    success "已注册 $registered 个工作区 (用 linxira-components guard register <path> 可再加)"
+    systemctl enable --now "$WORKSPACE_GUARD_TIMER" || error "定时器启动失败"
+    success "定时器已启用: 每 30 分钟一次 (${WORKSPACE_GUARD_TIMER})"
+    echo
+    workspace_guard_status
+}
+
+workspace_guard_disable() {
+    require_root
+    systemctl disable --now "$WORKSPACE_GUARD_TIMER" >/dev/null 2>&1 || true
+    success "工作区守护定时器已停止 (仓库数据与已注册的恢复点全部保留)"
+}
+
+workspace_guard_adopt_installer() {
+    # 装机阶段已建好分区并写好配置, 这里只补仓库与定时器。
+    require_root
+    if ! workspace_guard_configured 2>/dev/null; then
+        info "装机未选择工作区守护, 跳过"
+        return 0
+    fi
+    install -d -m 700 /var/lib/linxira/guard
+    chmod 700 /var/lib/linxira/guard
+    install -d -m 700 /var/lib/linxira/guard/workspaces
+    local registered
+    registered=$(workspace_guard_register_workspaces /var/lib/linxira/guard)
+    success "已接管装机时创建的工作区守护: 注册 $registered 个工作区"
+    if systemctl enable --now "$WORKSPACE_GUARD_TIMER"; then
+        success "定时器已启用: 每 30 分钟一次 (${WORKSPACE_GUARD_TIMER})"
+    else
+        warn "守护定时器未能启动; 用 systemctl status ${WORKSPACE_GUARD_TIMER} 排查"
+    fi
+}
+
+workspace_guard_handbook() {
+    local manifest=/usr/share/linxira/wiki/ai/manifest.json
+    if [ ! -f "$manifest" ]; then
+        error "官方手册未安装 (linxira-wiki 包)"
+    fi
+    cat "$manifest" | head -40
+}
+
+workspace_guard_manage() {
+    local action="${1:-status}"
+    case "$action" in
+        status) workspace_guard_status "" "${2:-}" ;;
+        enable) shift; workspace_guard_enable "$@" ;;
+        disable) workspace_guard_disable ;;
+        adopt-installer) workspace_guard_adopt_installer ;;
+        handbook) workspace_guard_handbook ;;
+        help|*) echo "Usage: linxira-config workspace-guard <enable|disable|status|handbook>";;
     esac
 }
 
@@ -1173,6 +1429,15 @@ ssh_status() {
     root_login=$(ssh_effective_config permitrootlogin)
     password_auth=$(ssh_effective_config passwordauthentication)
     ip=$(hostname -I 2>/dev/null | awk '{print $1}' 2>/dev/null) || true
+    if [ "${SSH_STATUS_JSON:-}" = "1" ]; then
+        jq -nc --arg state "$active" --arg startup "$enabled" --argjson port "$port" \
+            --arg root_login "$root_login" --arg password_auth "$password_auth" \
+            --arg ip "${ip:-}" \
+            '{service_state: $state, service_startup: $startup, port: $port,
+              root_login: $root_login, password_authentication: $password_auth,
+              address: (if $ip == "" then null else $ip end)}'
+        return 0
+    fi
     header "SSH Status"
     printf '  %-24s %s\n' "Service state:" "$active"
     printf '  %-24s %s\n' "Service startup:" "$enabled"
@@ -1187,6 +1452,10 @@ ssh_manage() {
     shift || true
 
     case $action in
+        status)
+            [ "${1:-}" = "--json" ] && export SSH_STATUS_JSON=1
+            ssh_status
+            ;;
         on|enable|start)
             require_root
             sudo systemctl enable --now sshd
@@ -1448,8 +1717,47 @@ power_manage() {
 
 # ─── Network Diagnostics ────────────────────────────────────
 
+net_diag_json() {
+    # 人读输出一大段解释文字, agent 只需要这些事实。
+    local networkmanager=inactive networkd=inactive gateway=none resolve=false
+    local ping_ip=false ping_host=false firewall=none nameservers='[]'
+    systemctl is-active --quiet NetworkManager &>/dev/null && networkmanager=active
+    systemctl is-active --quiet systemd-networkd &>/dev/null && networkd=active
+    gateway=$(ip route show default 2>/dev/null | head -1)
+    [ -n "$gateway" ] || gateway=none
+    if [ -f /etc/resolv.conf ]; then
+        nameservers=$(
+            sed -nE 's/^nameserver[[:space:]]+//p' /etc/resolv.conf 2>/dev/null |
+                jq -Rsc 'split("\n") | map(select(length > 0))'
+        )
+    fi
+    host archlinux.org &>/dev/null && resolve=true
+    ping -c 1 -W 3 8.8.8.8 &>/dev/null && ping_ip=true
+    ping -c 1 -W 3 archlinux.org &>/dev/null && ping_host=true
+    if command -v ufw &>/dev/null; then
+        if ufw status 2>/dev/null | head -1 | grep -q active; then firewall=ufw-active; else firewall=ufw-inactive; fi
+    elif command -v iptables &>/dev/null; then
+        firewall=iptables
+    fi
+    local interfaces='[]'
+    if command -v ip &>/dev/null; then
+        interfaces=$(ip -br -json addr show 2>/dev/null || echo '[]')
+    fi
+    jq -nc --arg nm "$networkmanager" --arg nd "$networkd" --arg gateway "$gateway" \
+        --argjson resolve "$resolve" --argjson ping_ip "$ping_ip" \
+        --argjson ping_host "$ping_host" --arg firewall "$firewall" \
+        --argjson nameservers "$nameservers" --argjson interfaces "$interfaces" \
+        '{networkmanager: $nm, systemd_networkd: $nd, default_route: $gateway,
+          dns_servers: $nameservers, dns_resolves: $resolve, interfaces: $interfaces,
+          connectivity: {ping_8_8_8_8: $ping_ip, ping_archlinux_org: $ping_host},
+          firewall: $firewall}'
+}
+
 net_diag() {
-    header "Network Diagnostics"
+    if [ "${1:-}" = "--json" ]; then
+        net_diag_json
+        return 0
+    fi
 
     # NetworkManager status
     header "NetworkManager"
@@ -1841,14 +2149,14 @@ case "${1:-help}" in
         ;;
     mirror)
         case "${2:-arch}" in
-            list) mirror_list arch ;;
+            list) mirror_list arch "${4:-}" ;;
             speed) mirror_speed arch "${3:-}" ;;
             auto) mirror_auto arch ;;
             set) mirror_set arch "${3:-}" ;;
             reset) mirror_reset arch ;;
             arch|npm|pip|aur|flatpak|go)
                 case "${3:-list}" in
-                    list) mirror_list "$2" ;;
+                    list) mirror_list "$2" "${4:-}" ;;
                     speed) mirror_speed "$2" "${4:-}" ;;
                     auto) mirror_auto "$2" ;;
                     set) mirror_set "$2" "${4:-}" ;;
@@ -1920,7 +2228,7 @@ case "${1:-help}" in
         ;;
     net)
         case "${2:-help}" in
-            diag) net_diag ;;
+            diag) net_diag "${3:-}" ;;
             fix) backend_pending ;;
             dns) net_dns "${3:-show}" "${4:-}" ;;
             *) error "Unknown net action: ${2:-} (use diag/fix/dns)" ;;
@@ -1943,6 +2251,9 @@ case "${1:-help}" in
         ;;
     timeshift)
         timeshift_manage "${2:-help}"
+        ;;
+    workspace-guard)
+        workspace_guard_manage "${2:-status}" "${3:-}"
         ;;
     headless)
         headless_manage "${2:-status}" "${3:-}"

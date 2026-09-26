@@ -113,6 +113,35 @@ forced-command or environment options from becoming a shell execution path.
 Existing optioned entries are visible as `optioned` and can be removed, but the
 CLI never creates them.
 
+## Workspace guard
+
+`workspace-guard` protects a work directory (`.git` included) from an agent that
+runs with the user's full permissions. It is off until a root administrator turns
+it on, and it is deliberately unreadable to the agent afterwards.
+
+```console
+sudo linxira-config workspace-guard enable     # pick a disk, create the ext4 store, register, start the timer
+linxira-config workspace-guard status          # configuration, store, timer
+linxira-config workspace-guard status --json   # same, one line of JSON
+sudo linxira-config workspace-guard disable    # stop the timer, keep every stored recovery point
+linxira-config workspace-guard handbook        # AI-readable handbook manifest
+```
+
+`enable` is idempotent: it skips the partitioning steps when the configuration is
+already present, so an interrupted run resumes at the check instead of partitioning
+again. A partition it created is never removed automatically — deleting a
+partition table is destructive and stays a human decision.
+
+The store lives on a partition that is deliberately **not** added to `/etc/fstab`:
+it is not mounted at boot, so without root the agent cannot reach or alter any
+recovery point. `/etc/linxira/workspace-guard.conf` is `root:root 0600`; a
+non-root `status` reports "present but not readable" instead of a permission
+traceback.
+
+Day-to-day operations live in `linxira-components guard`
+(`status`/`list` read-only, `snapshot`/`restore` behind a Polkit prompt).
+Restoring always writes a new directory and never overwrites the live workspace.
+
 ## Runtime contract
 
 - Bash
