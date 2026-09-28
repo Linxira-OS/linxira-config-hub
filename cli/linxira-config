@@ -85,7 +85,9 @@ ${BOLD}Commands:${NC}
   conda channels <act>  Miniforge channel configuration
   timeshift <action>    Timeshift quick setup (enable/disable/status)
   workspace-guard <act> Workspace guard setup & state (enable/disable/status/handbook)
-  headless <action>     Headless server mode (on/off/status)
+  stack <action>        Software stacks — bridge to linxira-component-manager (list/status/install/tui)
+  env <action>          Environment variables in /etc/profile.d/linxira-env.sh (list/get/set/unset)
+  tui                   Interactive number menu (pure bash, same commands)
   gpu <action>          GPU driver management
   net <action>          Network diagnostics & fixes
   info                  Show system information
@@ -787,6 +789,138 @@ workspace_guard_manage() {
         handbook) workspace_guard_handbook ;;
         help|*) echo "Usage: linxira-config workspace-guard <enable|disable|status|handbook>";;
     esac
+}
+
+# ─── Software Stacks: component-manager 转发桥 ───────────────
+# 2026-09-28 用户决策: config 是 WSL/服务器用户的一站式入口。安装逻辑仍单点
+# 在 component-manager(同一 plan→confirm→apply 事务链), 这里只做显式转发;
+# 直连 `linxira-config install <pkg>` 继续拒止(见 legacy install 入口)。
+stack_manage() {
+    local action="${1:-list}"
+    command -v linxira-component-manager >/dev/null 2>&1 || \
+        error "requires linxira-component-manager (install it from [linxira] repo)"
+    case "$action" in
+        list|status|install)
+            shift
+            exec linxira-component-manager "$action" "$@"
+            ;;
+        tui)
+            shift
+            exec linxira-component-manager --tui "$@"
+            ;;
+        help|*)
+            echo "Usage: linxira-config stack <list|status|install|tui> [ids...] [--yes] [--json] [--dry-run]"
+            ;;
+    esac
+}
+
+# ─── Environment Variables: /etc/profile.d/linxira-env.sh ────
+ENV_FILE=/etc/profile.d/linxira-env.sh
+
+env_list() {
+    local as_json=$1
+    if [ ! -r "$ENV_FILE" ]; then
+        [ "$as_json" = "--json" ] && echo "{}" || true
+        return 0
+    fi
+    if [ "$as_json" = "--json" ]; then
+        python3 - "$ENV_FILE" <<'PY'
+import json
+import re
+import sys
+
+pairs = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    match = re.match(r"^export ([A-Za-z_][A-Za-z0-9_]*)='(.*)'$", line.rstrip("\n"))
+    if match:
+        pairs[match.group(1)] = match.group(2)
+print(json.dumps(pairs, ensure_ascii=False, sort_keys=True))
+PY
+    else
+        grep -E "^export [A-Za-z_][A-Za-z0-9_]*=" "$ENV_FILE" || true
+    fi
+}
+
+env_get() {
+    local key=$1 as_json=$2 line value
+    line=$(grep -E "^export ${key}=" "$ENV_FILE" 2>/dev/null | tail -1) || true
+    value=${line#*=\'}; value=${value%\'}
+    if [ "$as_json" = "--json" ]; then
+        printf '{"key":"%s","value":"%s"}\n' "$key" "$value"
+    else
+        [ -n "$line" ] && echo "$key=$value" || echo "$key=(unset)"
+    fi
+}
+
+env_manage() {
+    local action="${1:-list}"
+    case "$action" in
+        list)
+            env_list "${2:-}"
+            ;;
+        get)
+            [ -n "${2:-}" ] || error "Use: linxira-config env get <KEY> [--json]"
+            env_get "$2" "${3:-}"
+            ;;
+        set)
+            local key="${2:-}" value="${3:-}"
+            [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || error "invalid KEY: $key"
+            [ -n "$3" ] || error "Use: linxira-config env set <KEY> <VALUE>"
+            require_root
+            install -d /etc/profile.d
+            touch "$ENV_FILE" && chmod 644 "$ENV_FILE"
+            value=${value//\'/\'\\\'\'}
+            if grep -qE "^export ${key}=" "$ENV_FILE"; then
+                sed -i "s|^export ${key}=.*|export ${key}='${value}'|" "$ENV_FILE"
+            else
+                printf "export %s='%s'\n" "$key" "$value" >> "$ENV_FILE"
+            fi
+            success "env ${key} 已写入 $ENV_FILE (新登录会话生效)"
+            ;;
+        unset)
+            [ -n "${2:-}" ] || error "Use: linxira-config env unset <KEY>"
+            require_root
+            [ -f "$ENV_FILE" ] && sed -i "/^export ${2}=/d" "$ENV_FILE"
+            success "env ${2} 已移除"
+            ;;
+        help|*)
+            echo "Usage: linxira-config env <list [--json]|get KEY [--json]|set KEY VALUE|unset KEY>"
+            ;;
+    esac
+}
+
+# ─── TUI: 纯 bash 数字菜单(零依赖, 与指令同一实现) ───────────
+config_tui() {
+    while true; do
+        clear
+        echo -e "\e[1mLinxira Config Hub\e[0m v${VERSION}  —  数字选择, q 退出"
+        echo "  1) 系统信息          2) 镜像源测速与切换"
+        echo "  3) 网络诊断          4) 安全加固状态"
+        echo "  5) SSH 管理          6) Timeshift 快照"
+        echo "  7) 无头/桌面切换     8) 工作区守护"
+        echo "  9) 软件栈安装(TUI)  10) 环境变量"
+        echo " 11) 常用组件清单     12) 恢复诊断"
+        echo -n "> "
+        local choice
+        read -r choice || break
+        case "$choice" in
+            1) show_info ;;
+            2) mirror_manage speed ;;
+            3) net_diag ;;
+            4) security_manage status ;;
+            5) ssh_manage status ;;
+            6) timeshift_manage status ;;
+            7) headless_manage status ;;
+            8) workspace_guard_manage status ;;
+            9) stack_manage tui ;;
+            10) env_manage list; echo "(set/get/unset 见 linxira-config env help)" ;;
+            11) stack_manage list ;;
+            12) command -v linxira-recovery-diagnostics >/dev/null && linxira-recovery-diagnostics --help | head -8 || warn "未安装 linxira-recovery-diagnostics" ;;
+            q|Q|0|*) break ;;
+        esac
+        echo
+        read -rp "回车返回菜单…" _ || break
+    done
 }
 
 # ── 无头服务器模式（桌面零占用, 内存全给计算）──
@@ -2254,6 +2388,17 @@ case "${1:-help}" in
         ;;
     workspace-guard)
         workspace_guard_manage "${2:-status}" "${3:-}"
+        ;;
+    stack)
+        shift
+        stack_manage "$@"
+        ;;
+    env)
+        shift
+        env_manage "$@"
+        ;;
+    tui)
+        config_tui
         ;;
     headless)
         headless_manage "${2:-status}" "${3:-}"

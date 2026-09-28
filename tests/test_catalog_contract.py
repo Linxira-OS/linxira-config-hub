@@ -28,13 +28,20 @@ class CatalogContractTests(unittest.TestCase):
         self.assertNotIn("catalog-v1.json", script)
 
     def test_cli_does_not_expose_software_installation(self):
+        # 2026-09-28 更新: config 是一站式入口(stack 转发桥), 但安装逻辑仍单点在
+        # component-manager —— config 自身不得实现 pacman 安装。
         script = CLI.read_text(encoding="utf-8")
-        self.assertIn("Software installation is owned by Shelly and Quick System Software Setup", script)
+        self.assertIn("stack_manage()", script)
+        self.assertIn('exec linxira-component-manager "$action" "$@"', script)
         self.assertNotIn("Install (post-install packages)", script)
         self.assertNotIn("install_catalog_", script)
         self.assertNotIn("install_packages()", script)
         self.assertNotIn("Installing Profiles", script)
         self.assertNotIn("Installing Applications", script)
+        # 转发桥内部不得出现直接 pacman 安装调用
+        import re
+        bridge = script.split("stack_manage()")[1].split("\n}\n")[0]
+        self.assertIsNone(re.search(r"pacman\s+-S", bridge))
         self.assertFalse((CLI.parents[1] / "profiles/science.conf").exists())
 
     @unittest.skipUnless(shutil.which("bash"), "bash is not available")

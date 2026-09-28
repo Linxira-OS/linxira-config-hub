@@ -113,6 +113,33 @@ forced-command or environment options from becoming a shell execution path.
 Existing optioned entries are visible as `optioned` and can be removed, but the
 CLI never creates them.
 
+
+## Software stacks & environment variables (WSL one-stop entry)
+
+`stack` is an explicit forwarding bridge to `linxira-component-manager` — the
+same plan → confirm → apply transaction chain used by the GUI and AI agents.
+Installation logic stays single-sourced there; the direct `linxira-config
+install <pkg>` entrypoint remains rejected.
+
+```bash
+linxira-config stack list                 # installer-visible leaves (+ --json)
+linxira-config stack install component-uv --yes --dry-run
+linxira-config stack install component-latex component-java --yes
+linxira-config stack tui                  # curses TUI of component-manager
+```
+
+`env` manages `/etc/profile.d/linxira-env.sh` (root, 0644):
+
+```bash
+linxira-config env set GOPROXY https://goproxy.cn,direct
+linxira-config env get GOPROXY            # (+ --json)
+linxira-config env list [--json]
+linxira-config env unset GOPROXY
+```
+
+`linxira-config tui` opens a pure-bash numbered menu (zero dependencies) that
+dispatches to the very same command implementations.
+
 ## Workspace guard
 
 `workspace-guard` protects a work directory (`.git` included) from an agent that
