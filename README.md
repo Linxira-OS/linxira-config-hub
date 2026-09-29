@@ -193,3 +193,149 @@ priority. Anaconda `defaults` is not configured or enabled by Linxira.
 ## License
 
 MIT. See `LICENSE`.
+
+---
+
+## 简体中文
+
+Linxira OS 的配置与诊断工具。
+
+当前受支持的界面是 `cli/linxira-config`，面向管理员提供来源、运行时、SSH、网络与受控配置管理。通用软件管理由 Shelly 负责，策展应用安装由 Quick System Software Setup 及其 `linxira-components` 事务后端负责。Config Hub 不包含软件中心实现，也不暴露软件安装命令。其镜像命令覆盖 Arch、npm、PyPI、AUR、Go modules 以及显式启用的 Flatpak 远端。
+
+## 目录查询
+
+目录命令是只读的，接受目录 ID，绝不接受包名或命令：
+
+```console
+linxira-config catalog software --all
+linxira-config catalog component --status partial
+linxira-config catalog bundle show kde-plasma
+```
+
+Catalog v2 兼容层把 `software` 映射到 `applications`，把 `component` 映射到旧的 `profiles` 元数据，把 `bundle` 映射到 `desktopBundles`。CLI 不展开也不应用这些记录。默认情况下列表只显示 `installed`、`partial`、`external`、`pending`、`drifted` 与 `reboot-required`；`--all` 还会显示 `not-installed` 条目。`--status` 接受这些状态外加 `not-installed` 与 `unavailable`。
+
+当 `/var/lib/linxira/catalog/state-v1.json` 不存在时，包观察结果报告为 `external`、`partial` 或 `not-installed`。状态文件可以按下面这个固定形状提供 managed 或 pending 状态：
+
+```json
+{
+  "catalogStateVersion": 1,
+  "items": [
+    {"kind": "software", "id": "firefox", "status": "installed"}
+  ]
+}
+```
+
+`LINXIRA_CATALOG_STATE_PATH` 可为测试选择另一个状态文件。
+
+## SSH 快速上手（把这台机器变成服务器）
+
+一条命令开通远程访问（缺少则安装 `openssh`，启用并启动 `sshd`，显式允许密码认证，UFW 激活时放行防火墙，并打印连接行）：
+
+```console
+sudo linxira-config ssh on   # prints: Connect: ssh <user>@<ip>
+linxira-config ssh status    # verify: SSH server: RUNNING
+```
+
+在你要用来连接的*客户端*上生成密钥对：
+
+```console
+linxira-config ssh key generate            # Ed25519, ~/.ssh/id_ed25519
+linxira-config ssh key show                # copy the public key line
+```
+
+在服务器上授权（设计上只接受纯公钥）：
+
+```console
+echo 'ssh-ed25519 AAAA... user@host' > /tmp/key.pub
+linxira-config ssh authorized add /tmp/key.pub && rm /tmp/key.pub
+linxira-config ssh authorized list
+```
+
+从客户端连接（IP 见 `ssh status` 的 `Connect:`）：
+
+```console
+ssh user@server-ip
+```
+
+安全提示：在暴露到公网之前，先在 `/etc/ssh/sshd_config` 中禁用 `PasswordAuthentication`，并保持防火墙开启。完整教程见
+<https://linxira-os.github.io/docs/remote-access/>（或 `/zh/docs/remote-access/`）。
+
+## 无头模式（桌面 ⇄ 服务器，运行时切换）
+
+`headless on/off/status` 在 KDE 桌面与无头服务器状态之间切换运行中的系统，把桌面原本占用的内存释放给计算任务：
+
+```console
+linxira-config headless on       # desktop disabled from next boot
+linxira-config headless on now   # switch immediately (interactive confirm)
+linxira-config headless off      # restore desktop from next boot
+linxira-config headless off now  # switch back immediately
+linxira-config headless status   # current target (multi-user vs graphical)
+```
+
+`on now` 会停止显示管理器并终止当前桌面会话（未保存的数据会丢失 —— CLI 在 TTY 上会要求确认）。切换动作是 `systemctl isolate multi-user.target`；反向操作会重启 SDDM。请使用 SSH 或 TTY 切换回来。
+
+## SSH 密钥
+
+`ssh key list/show/fingerprint/generate/remove` 为被调用的目标用户管理命名的 Ed25519 密钥对。名称是纯 basename，现有密钥绝不会被覆盖，符号链接的 SSH 路径被拒绝，生成时会提示输入口令，移除需要 `--yes`。
+
+`ssh authorized list/add/remove` 管理同一用户的 `authorized_keys`。每次 add 只接受一个不带 `authorized_keys` 选项的纯公钥；移除使用精确的 SHA256 指纹并需要 `--yes`。这防止 forced-command 或 environment 选项成为 shell 执行路径。带选项的现有条目以 `optioned` 显示，可以移除，但 CLI 绝不创建它们。
+
+
+## 软件栈与环境变量（WSL 一站式入口）
+
+`stack` 是到 `linxira-component-manager` 的显式转发桥 —— 与 GUI 和 AI 代理使用的相同 plan → confirm → apply 事务链。安装逻辑保持单源于彼处；直接的 `linxira-config install <pkg>` 入口仍然被拒绝。
+
+```bash
+linxira-config stack list                 # installer-visible leaves (+ --json)
+linxira-config stack install component-uv --yes --dry-run
+linxira-config stack install component-latex component-java --yes
+linxira-config stack tui                  # curses TUI of component-manager
+```
+
+`env` 管理 `/etc/profile.d/linxira-env.sh`（root，0644）：
+
+```bash
+linxira-config env set GOPROXY https://goproxy.cn,direct
+linxira-config env get GOPROXY            # (+ --json)
+linxira-config env list [--json]
+linxira-config env unset GOPROXY
+```
+
+`linxira-config tui` 打开一个纯 bash 编号菜单（零依赖），分发到完全相同的命令实现。
+
+## 工作区守护
+
+`workspace-guard` 保护工作目录（含 `.git`）免受以用户完整权限运行的 agent 破坏。在 root 管理员开启之前它处于关闭状态，开启之后对 agent 刻意不可读。
+
+```console
+sudo linxira-config workspace-guard enable     # pick a disk, create the ext4 store, register, start the timer
+linxira-config workspace-guard status          # configuration, store, timer
+linxira-config workspace-guard status --json   # same, one line of JSON
+sudo linxira-config workspace-guard disable    # stop the timer, keep every stored recovery point
+linxira-config workspace-guard handbook        # AI-readable handbook manifest
+```
+
+`enable` 是幂等的：当配置已存在时跳过分区步骤，因此被中断的运行会从检查处继续，而不是再次分区。它创建的分区绝不会被自动删除 —— 删除分区表是破坏性操作，始终由人来决定。
+
+存储位于一个刻意**不**加入 `/etc/fstab` 的分区上：开机不挂载，因此没有 root 的 agent 无法触及或篡改任何恢复点。`/etc/linxira/workspace-guard.conf` 为 `root:root 0600`；非 root 的 `status` 会报告 "present but not readable" 而不是权限回溯。
+
+日常操作位于 `linxira-components guard`（`status`/`list` 只读，`snapshot`/`restore` 需经过 Polkit 提示）。恢复总是写入新目录，从不覆盖活动工作区。
+
+## 运行时契约
+
+- Bash
+- `jq`
+- `pacman` 与标准 Arch 系统工具
+- 来自 `linxira-catalog` 的 `/usr/share/linxira/catalog/catalog-v3.json`
+
+设置 `LINXIRA_CATALOG_PATH` 可以针对已安装 Linxira 系统之外的 catalog 校验 CLI。
+
+Flatpak 远端默认保持禁用。`mirror flatpak set flathub` 是显式选择加入的操作，且需要 `flatpak` 客户端。
+
+Go 代理变更通过 `go env -w` 持久化；配置的代理与 `direct` 回退一起使用。`mirror go reset` 恢复 `proxy.golang.org`。
+
+Conda 配置刻意仅限 Miniforge。CLI 拒绝修改通用 Conda 安装，只允许经过评审的通道 ID `conda-forge` 与 `bioconda`；两者可以在严格通道优先级下同时启用。Anaconda `defaults` 不由 Linxira 配置或启用。
+
+## 许可证
+
+MIT。见 `LICENSE`。
