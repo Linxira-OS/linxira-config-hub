@@ -2203,23 +2203,16 @@ logs_upload() {
     fi
     [ "$(id -u)" -eq 0 ] && chmod a+r -- "$file" 2>/dev/null
     local url
-    printf '%s\n' "上传中(0x0.st, 保留约30天)..."
-    url=$(curl -fsS --max-time 90 -A "linxira-config/${VERSION}" -F "file=@${file}" https://0x0.st 2>/dev/null)
+    # 通道顺序(2026-09-30 国内实测): paste.rs OK / termbin OK / dpaste 本机 curl
+    # 语法异常待查; 0x0.st 已全网停服(AI 灌水), 剔除。
+    printf '%s\n' "上传中(paste.rs)..."
+    url=$(curl -fsS --max-time 60 --data-binary "@${file}" https://paste.rs 2>/dev/null)
     if [ -n "$url" ]; then
-        printf '%s\n' "日志已上传, 把下面的链接发给我们即可:"
+        printf '%s\n' "日志已上传(paste.rs), 把下面的链接发给我们即可:"
         printf '  %s\n' "$url"
         return 0
     fi
-    printf '%s\n' "0x0.st 不可达, 尝试 dpaste 备用通道..."
-    # 2026-09-30: 0x0.st 在国内不可达是实测常态; dpaste API 纯 curl、无额外依赖。
-    url=$(curl -fsS --max-time 60 --data-urlencode "content@${file}" -d expiry_days=7 https://dpaste.com/api/v2/text 2>/dev/null)
-    if [ -n "$url" ]; then
-        case "$url" in http*) : ;; *) url="https://dpaste.com${url}" ;; esac
-        printf '%s\n' "日志已上传(dpaste, 保留7天), 把下面的链接发给我们即可:"
-        printf '  %s\n' "$url"
-        return 0
-    fi
-    printf '%s\n' "dpaste 不可达, 尝试 termbin 备用通道..."
+    printf '%s\n' "paste.rs 不可达, 尝试 termbin 备用通道..."
     if command -v nc >/dev/null 2>&1; then
         url=$(nc termbin.com 9999 < "$file" 2>/dev/null | tr -d '\r\n')
     else
@@ -2229,6 +2222,14 @@ logs_upload() {
     fi
     if [ -n "$url" ]; then
         printf '%s\n' "日志已上传(termbin), 把下面的链接发给我们即可:"
+        printf '  %s\n' "$url"
+        return 0
+    fi
+    printf '%s\n' "termbin 不可达, 尝试 dpaste 备用通道..."
+    url=$(curl -fsS --max-time 60 --data-urlencode "content@${file}" -d expiry_days=7 https://dpaste.com/api/v2/text 2>/dev/null)
+    if [ -n "$url" ]; then
+        case "$url" in http*) : ;; *) url="https://dpaste.com${url}" ;; esac
+        printf '%s\n' "日志已上传(dpaste, 保留7天), 把下面的链接发给我们即可:"
         printf '  %s\n' "$url"
         return 0
     fi
