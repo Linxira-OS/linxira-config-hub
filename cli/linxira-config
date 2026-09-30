@@ -2222,11 +2222,15 @@ logs_upload() {
     printf '%s\n' "dpaste 不可达, 尝试 termbin 备用通道..."
     if command -v nc >/dev/null 2>&1; then
         url=$(nc termbin.com 9999 < "$file" 2>/dev/null | tr -d '\r\n')
-        if [ -n "$url" ]; then
-            printf '%s\n' "日志已上传(termbin), 把下面的链接发给我们即可:"
-            printf '  %s\n' "$url"
-            return 0
-        fi
+    else
+        # 镜像内无 nc: bash 内建 /dev/tcp 直连 termbin 协议(纯内建, 零依赖)
+        url=$(exec 3<>"/dev/tcp/termbin.com/9999" && cat "$file" >&3 && head -c 64 <&3 | tr -d '\r\n')
+        exec 3>&- 2>/dev/null
+    fi
+    if [ -n "$url" ]; then
+        printf '%s\n' "日志已上传(termbin), 把下面的链接发给我们即可:"
+        printf '  %s\n' "$url"
+        return 0
     fi
     error "上传失败: 检查网络后重试, 或直接把日志文件内容复制发给我们 ($file)"
     return 1
