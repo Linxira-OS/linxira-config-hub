@@ -130,7 +130,7 @@ ${BOLD}SSH:${NC}
 
 ${BOLD}Logs (diagnostics):${NC}
   linxira-config logs collect          收集诊断日志到 ~/linxira-logs/
-  linxira-config logs upload [file]    上传日志并返回分享链接(0x0.st/termbin)
+  linxira-config logs upload [file]    上传日志并返回分享链接(paste.rs/termbin/dpaste)
 
 ${BOLD}Catalog (read-only):${NC}
   linxira-config catalog software [list] [--all|--status <state>]
@@ -2204,7 +2204,7 @@ logs_upload() {
     [ "$(id -u)" -eq 0 ] && chmod a+r -- "$file" 2>/dev/null
     local url
     # 通道顺序(2026-09-30 国内实测): paste.rs OK / termbin OK / dpaste 本机 curl
-    # 语法异常待查; 0x0.st 已全网停服(AI 灌水), 剔除。
+    # 该通道已全网停服(AI 灌水), 剔除。
     printf '%s\n' "上传中(paste.rs)..."
     url=$(curl -fsS --max-time 60 --data-binary "@${file}" https://paste.rs 2>/dev/null)
     if [ -n "$url" ]; then
