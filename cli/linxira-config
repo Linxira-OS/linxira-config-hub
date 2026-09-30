@@ -2174,7 +2174,7 @@ logs_collect() {
         echo
         echo "─── calamares installer log (tail) ───"
         local f
-        for f in /root/.cache/calamares/*.log /home/*/.cache/calamares/*.log /var/log/installation.log; do
+        for f in /tmp/linxira-installer.log /root/.cache/calamares/*.log /home/*/.cache/calamares/*.log /var/log/installation.log; do
             if [ -f "$f" ]; then
                 echo "--- $f (last 400 lines) ---"
                 tail -n 400 "$f" 2>/dev/null
