@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.5.1"
+VERSION="2.5.2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"

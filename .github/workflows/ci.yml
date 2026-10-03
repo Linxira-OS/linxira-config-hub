@@ -13,6 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: version sync (VERSION vs cli 内嵌串)
+        run: |
+          v=$(tr -d '[:space:]' < VERSION)
+          grep -q "VERSION=\"${v}\"" cli/linxira-config || {
+            echo "cli/linxira-config 内嵌 VERSION != VERSION 文件 (${v})"; exit 1; }
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
