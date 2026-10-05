@@ -408,7 +408,13 @@ mirror_set() {
             ;;
         npm)
             command -v npm >/dev/null || error "npm is not installed"
-            npm config set registry "$url" --location=user
+            # 2026-10-03: npm registry 改为「偏好记录 + 临时调用」, 不再持久写
+            # .npmrc —— 持久国内源会导致 npm login 跳到镜像无法认证(镜像只读代理)。
+            # 登录/发布永远走官方 registry, 无需任何配置。
+            env_manage set LINXIRA_NPM_REGISTRY "$url"
+            printf '已记录下载镜像偏好(仅临时调用生效, 不影响 npm login)。\n'
+            printf '临时下载: npm --registry=%s install <pkg>\n' "$url"
+            printf '登录/发布: npm login / npm publish (永远走官方 registry)\n'
             ;;
         pip)
             command -v python >/dev/null || error "Python is not installed"
@@ -432,6 +438,11 @@ mirror_set() {
 }
 
 mirror_reset() {
+    if [[ $1 == npm ]]; then
+        env_manage unset LINXIRA_NPM_REGISTRY 2>/dev/null || true
+        success "npm source preference cleared (official registry)"
+        return
+    fi
     mirror_set "$1" official
 }
 
