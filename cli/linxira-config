@@ -1556,7 +1556,9 @@ ssh_authorized_manage() {
 ssh_effective_config() {
     local key=$1 value
     if command -v sshd >/dev/null 2>&1; then
-        value=$(sshd -T 2>/dev/null | awk -v key="$key" '$1 == key { print $2; exit }') || true
+        # OpenSSH 10 的 sshd -T 输出首字母大写(Port/PasswordAuthentication);
+        # 统一小写比较, 否则 status 永远显示 unknown。
+        value=$(sshd -T 2>/dev/null | awk -v key="$key" 'tolower($1) == key { print $2; exit }') || true
     fi
     case "$key" in
         port) printf '%s\n' "${value:-22}" ;;
@@ -2282,6 +2284,9 @@ ssh_on() {
     sudo install -Dm644 /dev/null /etc/ssh/sshd_config.d/10-linxira.conf
     printf 'PasswordAuthentication yes\n' | sudo tee /etc/ssh/sshd_config.d/10-linxira.conf > /dev/null
     sudo systemctl enable --now sshd
+    if ! systemctl is-active --quiet sshd 2>/dev/null; then
+        error "sshd failed to start; recent journal:"$(printf '\n')"$(sudo journalctl -u sshd -n 15 --no-pager 2>/dev/null)"
+    fi
     if systemctl is-active --quiet ufw 2> /dev/null; then
         sudo ufw allow ssh > /dev/null 2>&1 || true
     fi
