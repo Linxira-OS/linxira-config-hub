@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.5.5"
+VERSION="2.6.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
@@ -92,6 +92,7 @@ ${BOLD}Commands:${NC}
   net <action>          Network diagnostics & fixes
   info                  Show system information
   status                Show a quick system status summary
+  capabilities          Print the machine-readable capability manifest (agent interface)
   help                  Show this help
 
 ${BOLD}Workspace Guard:${NC}
@@ -101,6 +102,10 @@ ${BOLD}Workspace Guard:${NC}
   sudo linxira-config workspace-guard disable     Stop the timer, keep every stored recovery point
   linxira-config workspace-guard handbook         Print the AI-readable handbook manifest
   linxira-components guard <status|list|snapshot|restore>  Day-to-day guard operations
+
+${BOLD}Agent interface:${NC}
+  linxira-config capabilities              JSON capability manifest for agents
+  linxira-config capabilities --path       Print the installed manifest path
 
 ${BOLD}Machine-readable output (--json):${NC}
   linxira-config workspace-guard status --json
@@ -2303,6 +2308,23 @@ ssh_off() {
     success "SSH remote access disabled"
 }
 
+# ─── Agent capability manifest ───────────────────────────────
+# 唯一事实来源: 随包安装的 capabilities.json。agent 读它即可知道哪些命令
+# 只读、哪些需要 root、哪些支持 JSON, 不需要解析 --help。
+capabilities_manifest() {
+    local manifest=/usr/share/linxira/agent/capabilities.json
+    if [[ ! -f "$manifest" ]]; then
+        # 源码树/开发环境回退: cli/ 的同级 agent/ 目录
+        manifest="${SCRIPT_DIR}/../agent/capabilities.json"
+    fi
+    [[ -f "$manifest" ]] || error "capability manifest not installed (linxira-config-hub)"
+    case "${1:-}" in
+        --path) printf '%s\n' "$manifest" ;;
+        --json|json|"") cat "$manifest" ;;
+        *) error "Usage: linxira-config capabilities [--json|--path]" ;;
+    esac
+}
+
 # ─── Main Dispatch ───────────────────────────────────────────
 
 case "${1:-help}" in
@@ -2400,6 +2422,9 @@ case "${1:-help}" in
         ;;
     info)
         show_info
+        ;;
+    capabilities)
+        capabilities_manifest "${2:-}"
         ;;
     status|quick-status)
         quick_status

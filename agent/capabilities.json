@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "tool": "linxira-config",
+  "version": "2.6.0",
+  "skill": "/usr/share/linxira/agent/skills/linxira-config/SKILL.md",
+  "notes": "Read-only commands are safe to run directly. Mutating commands require an explicit user decision; never capture or store the sudo password. Prefer --json where available.",
+  "commands": [
+    {
+      "id": "status",
+      "summary": "Quick system status summary.",
+      "argv": ["linxira-config", "status"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "info",
+      "summary": "Show system information (OS, kernel, desktop, hardware).",
+      "argv": ["linxira-config", "info"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "power.status",
+      "summary": "Show sleep, lid, and power settings.",
+      "argv": ["linxira-config", "power", "status"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "ssh.status",
+      "summary": "Show sshd state, port, root login, and password authentication.",
+      "argv": ["linxira-config", "ssh", "status"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "ssh.on",
+      "summary": "Enable and start sshd with password authentication.",
+      "argv": ["linxira-config", "ssh", "on"],
+      "privilege": "root",
+      "mutating": true,
+      "requires": ["openssh"]
+    },
+    {
+      "id": "ssh.off",
+      "summary": "Disable and stop sshd.",
+      "argv": ["linxira-config", "ssh", "off"],
+      "privilege": "root",
+      "mutating": true
+    },
+    {
+      "id": "security.status",
+      "summary": "Show security posture and firewall state.",
+      "argv": ["linxira-config", "security", "status"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "net.diag",
+      "summary": "Run network diagnostics.",
+      "argv": ["linxira-config", "net", "diag"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "mirror.arch.list",
+      "summary": "List configured Arch mirrors.",
+      "argv": ["linxira-config", "mirror", "arch", "list"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "json"
+    },
+    {
+      "id": "logs.collect",
+      "summary": "Collect diagnostic logs into ~/linxira-logs.",
+      "argv": ["linxira-config", "logs", "collect"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "workspace-guard.status",
+      "summary": "Show workspace guard configuration and timer state.",
+      "argv": ["linxira-config", "workspace-guard", "status", "--json"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "json"
+    },
+    {
+      "id": "catalog.software.list",
+      "summary": "List catalogued software and install state.",
+      "argv": ["linxira-config", "catalog", "software", "list"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "gpu.info",
+      "summary": "Show GPU and driver information.",
+      "argv": ["linxira-config", "gpu", "info"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "runtime.status",
+      "summary": "Show runtime and package-manager status.",
+      "argv": ["linxira-config", "runtime", "status"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "env.list",
+      "summary": "List Linxira environment variables.",
+      "argv": ["linxira-config", "env", "list"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text"
+    },
+    {
+      "id": "stack.list",
+      "summary": "List software stacks via linxira-component-manager.",
+      "argv": ["linxira-config", "stack", "list"],
+      "privilege": "none",
+      "mutating": false,
+      "output": "text",
+      "requires": ["linxira-component-manager"]
+    }
+  ]
+}
