@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.6.1"
+VERSION="2.6.2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
@@ -2255,26 +2255,31 @@ logs_upload() {
     return 1
 }
 
-# 2026-09-22: 终端回退链 —— cosmic-term(Arch 包名 cosmic-terminal) -> konsole -> xterm。
-# Config CLI 是交互式菜单, 终端随进程存活, 不需要 hold。
+# 2026-10-27: 终端回退链 —— 只派发支持 exec 标志的终端, cosmic-term 走桌面条目。
+# 不要给 cosmic-term 传 -e: 它只认 -w/--working-directory, 位置参数被当成
+# 文件/工作目录, 进程启动即退, 窗口一闪就没了(COSMIC 下表现为"点了没反应")。
 launch_config_terminal() {
 	local terminal
-	for terminal in /usr/bin/cosmic-term /usr/bin/konsole /usr/bin/xterm; do
+	for terminal in /usr/bin/konsole /usr/bin/alacritty /usr/bin/xterm; do
 		[ -x "${terminal}" ] || continue
 		case "${terminal}" in
-			*cosmic-term)
-				setsid "${terminal}" -e linxira-config > /dev/null 2>&1 &
-			;;
-			*konsole)
-				setsid "${terminal}" --hold -e linxira-config > /dev/null 2>&1 &
-			;;
-			*)
-				setsid "${terminal}" -hold -e linxira-config > /dev/null 2>&1 &
-			;;
+			# xterm 是唯一的单横杠终端; konsole/alacritty 都用 --hold。
+			*xterm) setsid "${terminal}" -hold -e linxira-config > /dev/null 2>&1 & ;;
+			*)      setsid "${terminal}" --hold -e linxira-config > /dev/null 2>&1 & ;;
 		esac
 		return 0
 	done
-	error "没有找到可用终端 (cosmic-term / konsole / xterm)"
+	# cosmic-term 没有 -e: 只认 -w/--working-directory, 传 -e 会当成文件, 窗口一闪即退。
+	# 唯一可靠的传递方式是 Terminal=true 的桌面条目。
+	if [ -x /usr/bin/cosmic-term ] && command -v gtk-launch > /dev/null; then
+		local entry="${XDG_DATA_HOME:-${HOME}/.local/share}/applications/linxira-config-$$.desktop"
+		mkdir -p "${entry%/*}" || return 1
+		printf '[Desktop Entry]\nType=Application\nName=Linxira Config\nExec=linxira-config\nTerminal=true\nNoDisplay=true\n' > "${entry}" || return 1
+		setsid gtk-launch "linxira-config-$$" > /dev/null 2>&1 &
+		( sleep 5; rm -f "${entry}" ) > /dev/null 2>&1 &
+		return 0
+	fi
+	error "没有找到可用终端 (konsole / alacritty / xterm / cosmic-term)"
 	return 1
 }
 

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "tool": "linxira-config",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "skill": "/usr/share/linxira/agent/skills/linxira-config/SKILL.md",
   "notes": "Read-only commands are safe to run directly. Mutating commands require an explicit user decision; never capture or store the sudo password. Prefer --json where available.",
   "commands": [
