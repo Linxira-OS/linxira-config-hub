@@ -1,14 +1,17 @@
 {
   "schemaVersion": 1,
   "tool": "linxira-config",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "skill": "/usr/share/linxira/agent/skills/linxira-config/SKILL.md",
   "notes": "Read-only commands are safe to run directly. Mutating commands require an explicit user decision; never capture or store the sudo password. Prefer --json where available.",
   "commands": [
     {
       "id": "status",
       "summary": "Quick system status summary.",
-      "argv": ["linxira-config", "status"],
+      "argv": [
+        "linxira-config",
+        "status"
+      ],
       "privilege": "none",
       "mutating": false,
       "output": "text"
@@ -16,7 +19,10 @@
     {
       "id": "info",
       "summary": "Show system information (OS, kernel, desktop, hardware).",
-      "argv": ["linxira-config", "info"],
+      "argv": [
+        "linxira-config",
+        "info"
+      ],
       "privilege": "none",
       "mutating": false,
       "output": "text"
@@ -24,70 +30,152 @@
     {
       "id": "power.status",
       "summary": "Show sleep, lid, and power settings.",
-      "argv": ["linxira-config", "power", "status"],
+      "argv": [
+        "linxira-config",
+        "power",
+        "status"
+      ],
       "privilege": "none",
       "mutating": false,
-      "output": "text"
+      "output": "text",
+      "welcome": {
+        "group": "power",
+        "order": 20,
+        "label_key": "open_power",
+        "icon": "battery-good",
+        "scope": "laptop"
+      }
     },
     {
       "id": "ssh.status",
       "summary": "Show sshd state, port, root login, and password authentication.",
-      "argv": ["linxira-config", "ssh", "status"],
+      "argv": [
+        "linxira-config",
+        "ssh",
+        "status"
+      ],
       "privilege": "none",
       "mutating": false,
-      "output": "text"
+      "output": "text",
+      "welcome": {
+        "group": "remote",
+        "order": 30,
+        "label_key": "open_remote",
+        "icon": "network-server",
+        "scope": "any"
+      }
     },
     {
       "id": "ssh.on",
       "summary": "Enable and start sshd with password authentication.",
-      "argv": ["linxira-config", "ssh", "on"],
+      "argv": [
+        "linxira-config",
+        "ssh",
+        "on"
+      ],
       "privilege": "root",
       "mutating": true,
-      "requires": ["openssh"]
+      "requires": [
+        "openssh"
+      ]
     },
     {
       "id": "ssh.off",
       "summary": "Disable and stop sshd.",
-      "argv": ["linxira-config", "ssh", "off"],
+      "argv": [
+        "linxira-config",
+        "ssh",
+        "off"
+      ],
       "privilege": "root",
       "mutating": true
     },
     {
       "id": "security.status",
       "summary": "Show security posture and firewall state.",
-      "argv": ["linxira-config", "security", "status"],
+      "argv": [
+        "linxira-config",
+        "security",
+        "status"
+      ],
       "privilege": "none",
       "mutating": false,
-      "output": "text"
+      "output": "text",
+      "welcome": {
+        "group": "security",
+        "order": 40,
+        "label_key": "open_security",
+        "icon": "security-high",
+        "scope": "any"
+      }
     },
     {
       "id": "net.diag",
       "summary": "Run network diagnostics.",
-      "argv": ["linxira-config", "net", "diag"],
+      "argv": [
+        "linxira-config",
+        "net",
+        "diag"
+      ],
       "privilege": "none",
       "mutating": false,
-      "output": "text"
+      "output": "text",
+      "welcome": {
+        "group": "network",
+        "order": 50,
+        "label_key": "open_network",
+        "icon": "network-wired",
+        "scope": "any"
+      }
     },
     {
       "id": "mirror.arch.list",
       "summary": "List configured Arch mirrors.",
-      "argv": ["linxira-config", "mirror", "arch", "list"],
+      "argv": [
+        "linxira-config",
+        "mirror",
+        "arch",
+        "list"
+      ],
       "privilege": "none",
       "mutating": false,
-      "output": "json"
+      "output": "json",
+      "welcome": {
+        "group": "mirrors",
+        "order": 60,
+        "label_key": "open_mirrors",
+        "icon": "folder-remote",
+        "scope": "any"
+      }
     },
     {
       "id": "logs.collect",
       "summary": "Collect diagnostic logs into ~/linxira-logs.",
-      "argv": ["linxira-config", "logs", "collect"],
+      "argv": [
+        "linxira-config",
+        "logs",
+        "collect"
+      ],
       "privilege": "none",
       "mutating": false,
-      "output": "text"
+      "output": "text",
+      "welcome": {
+        "group": "diagnostics",
+        "order": 75,
+        "label_key": "open_logs",
+        "icon": "document-save",
+        "scope": "any"
+      }
     },
     {
       "id": "workspace-guard.status",
       "summary": "Show workspace guard configuration and timer state.",
-      "argv": ["linxira-config", "workspace-guard", "status", "--json"],
+      "argv": [
+        "linxira-config",
+        "workspace-guard",
+        "status",
+        "--json"
+      ],
       "privilege": "none",
       "mutating": false,
       "output": "json"
@@ -95,7 +183,12 @@
     {
       "id": "catalog.software.list",
       "summary": "List catalogued software and install state.",
-      "argv": ["linxira-config", "catalog", "software", "list"],
+      "argv": [
+        "linxira-config",
+        "catalog",
+        "software",
+        "list"
+      ],
       "privilege": "none",
       "mutating": false,
       "output": "text"
@@ -103,7 +196,11 @@
     {
       "id": "gpu.info",
       "summary": "Show GPU and driver information.",
-      "argv": ["linxira-config", "gpu", "info"],
+      "argv": [
+        "linxira-config",
+        "gpu",
+        "info"
+      ],
       "privilege": "none",
       "mutating": false,
       "output": "text"
@@ -111,15 +208,30 @@
     {
       "id": "runtime.status",
       "summary": "Show runtime and package-manager status.",
-      "argv": ["linxira-config", "runtime", "status"],
+      "argv": [
+        "linxira-config",
+        "runtime",
+        "status"
+      ],
       "privilege": "none",
       "mutating": false,
-      "output": "text"
+      "output": "text",
+      "welcome": {
+        "group": "runtime",
+        "order": 70,
+        "label_key": "open_runtime",
+        "icon": "applications-development",
+        "scope": "any"
+      }
     },
     {
       "id": "env.list",
       "summary": "List Linxira environment variables.",
-      "argv": ["linxira-config", "env", "list"],
+      "argv": [
+        "linxira-config",
+        "env",
+        "list"
+      ],
       "privilege": "none",
       "mutating": false,
       "output": "text"
@@ -127,11 +239,47 @@
     {
       "id": "stack.list",
       "summary": "List software stacks via linxira-component-manager.",
-      "argv": ["linxira-config", "stack", "list"],
+      "argv": [
+        "linxira-config",
+        "stack",
+        "list"
+      ],
       "privilege": "none",
       "mutating": false,
       "output": "text",
-      "requires": ["linxira-component-manager"]
+      "requires": [
+        "linxira-component-manager"
+      ]
+    }
+  ],
+  "welcomeGroups": [
+    {
+      "id": "power",
+      "order": 10
+    },
+    {
+      "id": "remote",
+      "order": 20
+    },
+    {
+      "id": "security",
+      "order": 30
+    },
+    {
+      "id": "network",
+      "order": 40
+    },
+    {
+      "id": "mirrors",
+      "order": 50
+    },
+    {
+      "id": "runtime",
+      "order": 60
+    },
+    {
+      "id": "diagnostics",
+      "order": 70
     }
   ]
 }
