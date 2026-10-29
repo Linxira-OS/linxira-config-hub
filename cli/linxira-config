@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.6.3"
+VERSION="2.6.4"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
@@ -553,8 +553,8 @@ timeshift_manage() {
             ;;
         disable)
             require_root
-            systemctl disable --now linxira-timeshift-boot.timer linxira-timeshift-daily.timer >/dev/null 2>&1 || true
-            systemctl stop linxira-timeshift-boot.service linxira-timeshift-daily.service >/dev/null 2>&1 || true
+            systemctl disable --now linxira-timeshift-initial.service linxira-timeshift-boot.timer linxira-timeshift-daily.timer >/dev/null 2>&1 || true
+            systemctl stop linxira-timeshift-initial.service linxira-timeshift-boot.service linxira-timeshift-daily.service >/dev/null 2>&1 || true
             rm -f /etc/pacman.d/hooks/linxira-timeshift-autosnap.hook /usr/share/libalpm/hooks/linxira-timeshift-autosnap.hook
             if systemctl list-unit-files grub-btrfsd.service >/dev/null 2>&1; then
                 systemctl disable --now grub-btrfsd.service >/dev/null 2>&1 || true
@@ -579,6 +579,7 @@ timeshift_manage() {
                     echo "配置: 未绑定快照位置 (sudo linxira-config timeshift enable)"
                 fi
                 [ -f /etc/pacman.d/hooks/linxira-timeshift-autosnap.hook ] && echo "更新前自动快照: 已启用" || echo "更新前自动快照: 未启用"
+                systemctl is-enabled --quiet linxira-timeshift-initial.service >/dev/null 2>&1 && echo "首次快照服务: 已启用" || echo "首次快照服务: 未启用"
                 systemctl is-active grub-btrfsd.service >/dev/null 2>&1 && echo "GRUB 快照菜单(grub-btrfsd): 运行中" || echo "GRUB 快照菜单(grub-btrfsd): 未运行"
                 local active_timers=""
                 for unit in linxira-timeshift-boot.timer linxira-timeshift-daily.timer; do
