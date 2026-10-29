@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.6.4"
+VERSION="2.6.5"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
@@ -98,7 +98,7 @@ ${BOLD}Commands:${NC}
 ${BOLD}Workspace Guard:${NC}
   linxira-config workspace-guard status            Show guard configuration, store and timer state
   linxira-config workspace-guard status --json     Same, as one line of JSON
-  sudo linxira-config workspace-guard enable      Pick a disk, create the ext4 store, register, start the timer
+  sudo linxira-config workspace-guard enable      Create same-disk store, register, start the timer
   sudo linxira-config workspace-guard disable     Stop the timer, keep every stored recovery point
   linxira-config workspace-guard handbook         Print the AI-readable handbook manifest
   linxira-components guard <status|list|snapshot|restore>  Day-to-day guard operations
@@ -671,24 +671,11 @@ workspace_guard_status() {
         echo "  Workspaces:     $(find "$store/workspaces" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
         echo "  Snapshots:      $(find "$store/workspaces" -mindepth 2 -maxdepth 2 -type d -name '2*T*Z-*' 2>/dev/null | wc -l)"
     else
-        echo "  Store:          not mounted yet (the guard partition is not in fstab by design)"
+        echo "  Store:          missing (run: sudo linxira-config workspace-guard enable)"
     fi
     systemctl is-active --quiet "$WORKSPACE_GUARD_TIMER" 2>/dev/null \
         && echo "  Timer:          running (${WORKSPACE_GUARD_TIMER})" \
         || echo "  Timer:          not running"
-}
-
-workspace_guard_free_space() {
-    df -h --output=source,size,avail,target -x tmpfs -x devtmpfs 2>/dev/null | tail -n +2
-}
-
-workspace_guard_write_config() {
-    local store_path=$1 uuid=$2 keep_scheduled=$3 keep_manual=$4 schedule=$5
-    install -d -m 700 /etc/linxira
-    # 用 umask + 重定向而不是 tee -a: 配置文件从创建那一刻起就是 0600。
-    ( umask 177 && printf '[guard]\nstore_uuid = %s\nstore = %s\nschedule = %s\nkeep_scheduled = %s\nkeep_manual = %s\n' \
-        "$uuid" "$store_path" "$schedule" "$keep_scheduled" "$keep_manual" > "$WORKSPACE_GUARD_CONF" )
-    chmod 600 "$WORKSPACE_GUARD_CONF"
 }
 
 workspace_guard_register_workspaces() {
@@ -714,72 +701,23 @@ print(("registered " if outcome.get("ok") else "skipped ") + sys.argv[1])
 
 workspace_guard_enable() {
     require_root
-    local schedule='*:0/30' keep_scheduled=24 keep_manual=10
+    local store=/var/lib/linxira/guard
 
     if workspace_guard_configured 2>/dev/null; then
-        info "已配置, 跳过分区步骤 (幂等)"
+        info "已配置, 复用现有守护仓库 (幂等)"
     else
-        header "[1/4] 选择守护分区所在磁盘"
-        workspace_guard_free_space
-        local device
-        echo
-        read -r -p "  在哪块盘上创建守护分区 (如 /dev/nvme1n1, 留空取消): " device
-        [ -n "$device" ] || error "未选择设备, 已取消"
-        [ -b "$device" ] || error "不是块设备: $device"
-        if findmnt -n -S "$device" >/dev/null 2>&1; then
-            error "$device 已挂载, 守护分区必须建在未使用的空间上"
-        fi
-
-        header "[2/4] 选择容量"
-        local size
-        echo "  32 / 64 / 128 GB, 或直接输入自定义值"
-        read -r -p "  守护分区大小 [64]: " size
-        size=${size:-64}
-        [[ $size =~ ^[0-9]+$ ]] || error "容量必须是整数 GB: $size"
-        [ "$size" -ge 32 ] || error "守护分区不得小于 32 GB"
-        local size_gib=$((size * 1024))
-
-        header "[3/4] 创建 ext4 守护分区"
-        local partition
-        partition=$(lsblk -nrpo NAME "$device" | tail -n +2 | head -1)
-        [ -n "$partition" ] || partition=$device
-        local part_number
-        part_number=$(lsblk -nrpo NAME "$device" | tail -n +2 | wc -l)
-        [ "$part_number" -gt 0 ] || part_number=1
-        info "在 $partition 上追加第 $part_number 个分区 (${size}G, ext4, label=linxira-guard)"
-        echo "  该操作会修改磁盘分区表, 输入 yes 继续:"
-        read -r -p "  yes: " confirm
-        [ "$confirm" = "yes" ] || error "已取消, 未修改磁盘"
-        if ! sfdisk --no-reread --append "$partition" <<< ",${size_gib}MiB,L" >/dev/null 2>&1; then
-            sfdisk --no-reread --append "$partition" <<< ",+${size}G, L" >/dev/null 2>&1 \
-                || error "创建分区失败, 磁盘未改动"
-        fi
-        partpath --partno "$part_number" "$partition" >/dev/null 2>&1 \
-            || partx -u "$partition" >/dev/null 2>&1 || true
-        local created
-        created=$(partx --show --partno "$part_number" "$partition" 2>/dev/null | tail -1)
-        [ -n "$created" ] || created="${partition}$part_number"
-        udevadm settle >/dev/null 2>&1 || true
-        mkfs.ext4 -q -L linxira-guard "$created" || error "mkfs.ext4 失败"
-        local uuid
-        uuid=$(blkid -s UUID -o value "$created") || error "读取分区 UUID 失败"
-        # 守护盘不写进 fstab: 开机不挂载, 没有 root 就够不着快照。
-        if grep -qF "$created" /etc/fstab 2>/dev/null; then
-            cp /etc/fstab /etc/fstab.linxira-guard.bak
-            sed -i "\\|[[:space:]]$created[[:space:]]|d" /etc/fstab
-            info "已从 /etc/fstab 移除守护盘条目 (备份: /etc/fstab.linxira-guard.bak)"
-        fi
-        workspace_guard_write_config "/var/lib/linxira/guard" "$uuid" "$keep_scheduled" "$keep_manual" "$schedule"
-        success "守护分区已创建并写入 $WORKSPACE_GUARD_CONF (0600, root)"
-        info "已创建的分区不会自动删除 —— 删分区表是破坏性操作, 只能由你显式执行"
+        install -d -m 700 /etc/linxira
+        ( umask 177 && printf '[guard]\nstore = %s\nschedule = *:0/30\nkeep_scheduled = 24\nkeep_manual = 10\n' \
+            "$store" > "$WORKSPACE_GUARD_CONF" )
+        chmod 600 "$WORKSPACE_GUARD_CONF"
+        success "同盘守护仓库已配置: $store (root-only, 不建分区)"
     fi
 
-    header "[4/4] 注册工作区并开启定时器"
-    install -d -m 700 /var/lib/linxira/guard
-    chmod 700 /var/lib/linxira/guard
-    install -d -m 700 /var/lib/linxira/guard/workspaces
+    install -d -m 700 "$store"
+    chmod 700 "$store"
+    install -d -m 700 "$store/workspaces"
     local registered
-    registered=$(workspace_guard_register_workspaces /var/lib/linxira/guard)
+    registered=$(workspace_guard_register_workspaces "$store")
     success "已注册 $registered 个工作区 (用 linxira-components guard register <path> 可再加)"
     systemctl enable --now "$WORKSPACE_GUARD_TIMER" || error "定时器启动失败"
     success "定时器已启用: 每 30 分钟一次 (${WORKSPACE_GUARD_TIMER})"
@@ -794,7 +732,7 @@ workspace_guard_disable() {
 }
 
 workspace_guard_adopt_installer() {
-    # 装机阶段已建好分区并写好配置, 这里只补仓库与定时器。
+    # 装机阶段已写好同盘配置, 这里补仓库与定时器。
     require_root
     if ! workspace_guard_configured 2>/dev/null; then
         info "装机未选择工作区守护, 跳过"
