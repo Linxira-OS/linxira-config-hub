@@ -56,10 +56,16 @@ linxira-config workspace-guard status --json
 
 ```bash
 sudo linxira-config ssh on
+sudo linxira-config ssh harden
+sudo linxira-config ssh password on --yes
 sudo linxira-config ssh off
 sudo linxira-config security ufw on
 sudo linxira-config security ufw allow 22
 ```
+
+`ssh harden` refuses without a valid `authorized_keys` entry. It changes the
+managed `10-linxira.conf`, validates with `sshd -t`, and reloads sshd. Keep an
+existing session open until a new key-only login succeeds.
 
 ## Scope boundaries
 

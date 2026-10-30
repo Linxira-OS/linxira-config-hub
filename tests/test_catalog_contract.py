@@ -80,6 +80,28 @@ class CatalogContractTests(unittest.TestCase):
         self.assertNotIn('read -p "Overwrite?', script)
         self.assertNotIn("-N ''", script)
 
+    def test_ssh_hardening_is_precedence_safe_and_key_gated(self):
+        script = CLI.read_text(encoding="utf-8")
+        self.assertIn("SSH_PASSWORD_POLICY=", script)
+        self.assertIn("10-linxira.conf", script)
+        self.assertIn("ssh_authorized_key_present", script)
+        self.assertIn("ssh_apply_password_policy", script)
+        self.assertIn("PasswordAuthentication %s", script)
+        self.assertIn("KbdInteractiveAuthentication %s", script)
+        self.assertIn("ssh_apply_password_policy no", script)
+        self.assertIn("sshd -t", script)
+        self.assertIn("systemctl reload sshd", script)
+        self.assertIn("harden) ssh_harden", script)
+        self.assertIn("password) ssh_password_manage", script)
+        self.assertNotIn("99-linxira-hardening.conf", script)
+
+    def test_ssh_on_preserves_an_existing_key_only_policy(self):
+        script = CLI.read_text(encoding="utf-8")
+        ssh_on = script.split("ssh_on()", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("! -e $SSH_PASSWORD_POLICY", ssh_on)
+        self.assertIn("Existing key-only SSH policy preserved", ssh_on)
+        self.assertNotIn("install -Dm644 /dev/null /etc/ssh/sshd_config.d", ssh_on)
+
     def test_cli_has_no_generic_shell_executor(self):
         script = CLI.read_text(encoding="utf-8")
         self.assertNotIn("eval ", script)

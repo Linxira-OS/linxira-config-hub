@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "tool": "linxira-config",
-  "version": "2.6.5",
+  "version": "2.6.6",
   "skill": "/usr/share/linxira/agent/skills/linxira-config/SKILL.md",
   "notes": "Read-only commands are safe to run directly. Mutating commands require an explicit user decision; never capture or store the sudo password. Prefer --json where available.",
   "commands": [
@@ -67,10 +67,39 @@
     },
     {
       "id": "ssh.on",
-      "summary": "Enable and start sshd with password authentication.",
+      "summary": "Enable and start sshd; the first enable allows password authentication for key setup.",
       "argv": [
         "linxira-config",
         "ssh",
+        "on"
+      ],
+      "privilege": "root",
+      "mutating": true,
+      "requires": [
+        "openssh"
+      ]
+    },
+    {
+      "id": "ssh.harden",
+      "summary": "Disable SSH password authentication after verifying an authorized key.",
+      "argv": [
+        "linxira-config",
+        "ssh",
+        "harden"
+      ],
+      "privilege": "root",
+      "mutating": true,
+      "requires": [
+        "openssh"
+      ]
+    },
+    {
+      "id": "ssh.password-on",
+      "summary": "Re-enable SSH password authentication explicitly.",
+      "argv": [
+        "linxira-config",
+        "ssh",
+        "password",
         "on"
       ],
       "privilege": "root",

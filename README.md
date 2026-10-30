@@ -75,9 +75,19 @@ Connect from the client (IP shown in `ssh status` → `Connect:`):
 ssh user@server-ip
 ```
 
-Security notes: disable `PasswordAuthentication` in
-`/etc/ssh/sshd_config` before exposing to the public internet, and keep the
-firewall on. See the full tutorial at
+After key-only login works, disable password authentication:
+
+```console
+sudo linxira-config ssh harden
+```
+
+`ssh harden` requires a valid authorized key, rewrites the managed
+`/etc/ssh/sshd_config.d/10-linxira.conf`, validates with `sshd -t`, and reloads
+sshd. Re-enable passwords explicitly with
+`sudo linxira-config ssh password on --yes`.
+
+Security notes: do not expose the machine to the public internet with password
+authentication enabled; keep the firewall on. See the full tutorial at
 <https://linxira-os.github.io/docs/remote-access/> (or `/zh/docs/remote-access/`).
 
 ## Headless mode (desktop ⇄ server, runtime switch)
@@ -257,7 +267,17 @@ linxira-config ssh authorized list
 ssh user@server-ip
 ```
 
-安全提示：在暴露到公网之前，先在 `/etc/ssh/sshd_config` 中禁用 `PasswordAuthentication`，并保持防火墙开启。完整教程见
+确认密钥登录可用后，关闭密码认证：
+
+```console
+sudo linxira-config ssh harden
+```
+
+`ssh harden` 要求当前用户有可用的授权密钥，改写托管的
+`/etc/ssh/sshd_config.d/10-linxira.conf`，先跑 `sshd -t` 验证，再 reload sshd。
+需要重新允许密码时显式执行 `sudo linxira-config ssh password on --yes`。
+
+安全提示：不要在密码认证仍开启时把机器暴露到公网；保持防火墙开启。完整教程见
 <https://linxira-os.github.io/docs/remote-access/>（或 `/zh/docs/remote-access/`）。
 
 ## 无头模式（桌面 ⇄ 服务器，运行时切换）

@@ -4,10 +4,14 @@
 
 set -euo pipefail
 
-VERSION="2.6.5"
+VERSION="2.6.6"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_PATH="${LINXIRA_CATALOG_PATH:-/usr/share/linxira/catalog/catalog-v3.json}"
 CATALOG_STATE_PATH="${LINXIRA_CATALOG_STATE_PATH:-/var/lib/linxira/catalog/state-v1.json}"
+# Server-side SSH policy. Keep the Linxira-managed drop-in in one file so
+# OpenSSH's first-value-wins semantics cannot silently ignore a later 99-*.conf.
+SSH_SERVER_CONFIG_DIR="${LINXIRA_SSH_CONFIG_DIR:-/etc/ssh/sshd_config.d}"
+SSH_PASSWORD_POLICY="${SSH_SERVER_CONFIG_DIR}/10-linxira.conf"
 
 # Colors
 # ANSI-C quoted so the variables hold real ESC characters; plain cat (help
@@ -121,7 +125,9 @@ ${BOLD}Security:${NC}
   linxira-config security ufw allow <port>   Allow a TCP port through UFW
 
 ${BOLD}SSH:${NC}
-  linxira-config ssh on|off            Enable/disable remote SSH access (installs openssh,\n                                       enables sshd, allows password auth)
+  linxira-config ssh on|off            Enable/disable remote SSH access (installs openssh,\n                                       enables sshd; first enable allows password auth)
+  sudo linxira-config ssh harden [--yes]       Disable password auth; requires a valid authorized key
+  sudo linxira-config ssh password on [--yes]  Re-enable password auth (explicit, discouraged)
   linxira-config ssh status            Show SSH status & connection info
   linxira-config ssh port <number>     Change SSH port
   linxira-config ssh key list                    List public keys
@@ -1478,7 +1484,7 @@ ssh_authorized_add() {
         return
     fi
     temp=$(mktemp "$SSH_DIR/.authorized_keys.XXXXXX")
-    trap 'rm -f -- "$temp"' RETURN
+    trap 'rm -f -- "${temp:-}"' RETURN
     [[ ! -f $SSH_AUTHORIZED_FILE ]] || cat -- "$SSH_AUTHORIZED_FILE" >"$temp"
     printf '%s\n' "$line" >>"$temp"
     chmod 600 -- "$temp"
@@ -1495,7 +1501,7 @@ ssh_authorized_remove() {
     ssh_authorized_file
     [[ -f $SSH_AUTHORIZED_FILE ]] || error "No authorized keys found"
     temp=$(mktemp "$SSH_DIR/.authorized_keys.XXXXXX")
-    trap 'rm -f -- "$temp"' RETURN
+    trap 'rm -f -- "${temp:-}"' RETURN
     while IFS= read -r line || [[ -n $line ]]; do
         fingerprint=$(printf '%s\n' "$line" | ssh-keygen -lf - 2>/dev/null || true)
         current=$(awk '{print $2}' <<<"$fingerprint")
@@ -1520,6 +1526,137 @@ ssh_authorized_manage() {
         remove) [[ $# -eq 3 ]] || error "Use: linxira-config ssh authorized remove <fingerprint> --yes"; ssh_authorized_remove "$2" "$3" ;;
         *) error "Unknown authorized key action: $action (use list/add/remove)" ;;
     esac
+}
+
+ssh_authorized_key_present() {
+    local file line
+    ssh_target_context
+    file=$SSH_DIR/authorized_keys
+    [[ -f $file && ! -L $file ]] || return 1
+    command -v ssh-keygen >/dev/null 2>&1 || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line =~ ^[[:space:]]*$ ]] && continue
+        [[ $line =~ ^[[:space:]]*# ]] && continue
+        printf '%s\n' "$line" | ssh-keygen -lf - >/dev/null 2>&1 && return 0
+    done <"$file"
+    return 1
+}
+
+# 2026-10-31: sshd_config 先 Include drop-in, 且 OpenSSH 对同一项取第一个值。
+# 因此 Linxira 的密码策略只维护 10-linxira.conf 一个文件; 不写 99-* 的 no,
+# 否则它会被 10-* 的 yes 静默覆盖。
+ssh_write_password_policy() {
+    local mode=$1 dir tmp
+    [[ $mode == yes || $mode == no ]] || error "Internal error: invalid SSH password policy: $mode"
+    dir=$(dirname -- "$SSH_PASSWORD_POLICY")
+    install -d -m 0755 -- "$dir" || error "Unable to create SSH config directory: $dir"
+    [[ ! -L $SSH_PASSWORD_POLICY ]] || error "Refusing to write a symlinked SSH policy: $SSH_PASSWORD_POLICY"
+    [[ ! -d $SSH_PASSWORD_POLICY ]] || error "SSH policy path is a directory: $SSH_PASSWORD_POLICY"
+    tmp=$(mktemp "${SSH_PASSWORD_POLICY}.XXXXXX") || error "Unable to create a temporary SSH policy"
+    {
+        printf '# Managed by linxira-config; use `linxira-config ssh harden` or `ssh password on`.\n'
+        printf 'PasswordAuthentication %s\n' "$mode"
+        printf 'KbdInteractiveAuthentication %s\n' "$mode"
+    } >"$tmp"
+    chmod 0644 -- "$tmp"
+    chown root:root -- "$tmp" 2>/dev/null || true
+    if ! mv -fT -- "$tmp" "$SSH_PASSWORD_POLICY"; then
+        rm -f -- "$tmp"
+        error "Unable to install the SSH policy: $SSH_PASSWORD_POLICY"
+    fi
+}
+
+ssh_restore_password_policy() {
+    local backup=$1
+    if [[ -n $backup && -f $backup ]]; then
+        cp -a -- "$backup" "$SSH_PASSWORD_POLICY"
+    else
+        rm -f -- "$SSH_PASSWORD_POLICY"
+    fi
+}
+
+ssh_apply_password_policy() {
+    local mode=$1 backup='' effective
+    if [[ -e $SSH_PASSWORD_POLICY ]]; then
+        backup=$(mktemp) || error "Unable to create a temporary SSH policy backup"
+        cp -a -- "$SSH_PASSWORD_POLICY" "$backup" || error "Unable to back up the SSH policy"
+    fi
+    ssh_write_password_policy "$mode"
+    if ! sshd -t; then
+        ssh_restore_password_policy "$backup"
+        [[ -z $backup ]] || rm -f -- "$backup"
+        return 1
+    fi
+    if systemctl is-active --quiet sshd 2>/dev/null; then
+        if ! systemctl reload sshd; then
+            ssh_restore_password_policy "$backup"
+            [[ -z $backup ]] || rm -f -- "$backup"
+            systemctl reload sshd 2>/dev/null || true
+            return 1
+        fi
+    fi
+    effective=$(ssh_effective_config passwordauthentication)
+    if [[ $effective != "$mode" ]]; then
+        warn "Another sshd drop-in still overrides password authentication (effective: $effective)."
+        ssh_restore_password_policy "$backup"
+        [[ -z $backup ]] || rm -f -- "$backup"
+        systemctl reload sshd 2>/dev/null || true
+        return 1
+    fi
+    [[ -z $backup ]] || rm -f -- "$backup"
+    return 0
+}
+
+ssh_harden() {
+    local assume_yes=0 arg answer
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y) assume_yes=1 ;;
+            *) error "Use: linxira-config ssh harden [--yes]" ;;
+        esac
+    done
+    require_root
+    command -v sshd >/dev/null 2>&1 || error "OpenSSH server is not installed; run 'linxira-config ssh on' first."
+    ssh_target_context
+    ssh_authorized_key_present || error "No valid authorized key found for ${SSH_TARGET_USER}; add one and verify key login before hardening."
+    if (( ! assume_yes )); then
+        warn "This disables SSH password authentication for every account."
+        warn "Verify key login in another terminal before continuing; keep this session open."
+        printf 'Type "yes" to continue: '
+        read -r answer || answer=''
+        [[ $answer == yes ]] || { info "Cancelled; password authentication is unchanged."; return 0; }
+    fi
+    if ! ssh_apply_password_policy no; then
+        error "Password authentication was not disabled; the previous policy was restored."
+    fi
+    success "SSH password authentication disabled (key-only)."
+    info "Keep this session open; verify a new login with: ssh -o PreferredAuthentications=publickey -o PasswordAuthentication=no ${SSH_TARGET_USER}@<host>"
+}
+
+ssh_password_manage() {
+    local action=${1:-on} assume_yes=0 arg answer
+    shift || true
+    for arg in "$@"; do
+        case "$arg" in
+            --yes|-y) assume_yes=1 ;;
+            *) error "Use: linxira-config ssh password on [--yes]" ;;
+        esac
+    done
+    case "$action" in
+        on|enable) ;;
+        *) error "Use: linxira-config ssh password on [--yes]" ;;
+    esac
+    require_root
+    if (( ! assume_yes )); then
+        warn "Re-enabling SSH password authentication weakens the key-only policy."
+        printf 'Type "yes" to continue: '
+        read -r answer || answer=''
+        [[ $answer == yes ]] || { info "Cancelled."; return 0; }
+    fi
+    if ! ssh_apply_password_policy yes; then
+        error "Password authentication was not re-enabled; the previous policy was restored."
+    fi
+    success "SSH password authentication re-enabled; keep passwords strong and restrict the firewall."
 }
 
 ssh_effective_config() {
@@ -2249,14 +2386,19 @@ launch_config_terminal() {
 
 # 2026-09-22: ssh on —— 一条命令开通远程访问: 装 openssh、开机自启、
 # 显式放行密码连接、防火墙放行, 并打印连接地址。交互式 sudo 只问一次密码。
+# 2026-10-31: 若 10-linxira.conf 已由 ssh harden 改为 key-only, 再次 on 不得
+# 覆盖成密码登录; 只有文件不存在时才写入首次引导用的 yes。
 ssh_on() {
     require_root
     if ! command -v sshd &> /dev/null; then
         info "Installing openssh..."
         sudo pacman -S --needed --noconfirm openssh
     fi
-    sudo install -Dm644 /dev/null /etc/ssh/sshd_config.d/10-linxira.conf
-    printf 'PasswordAuthentication yes\n' | sudo tee /etc/ssh/sshd_config.d/10-linxira.conf > /dev/null
+    if [[ ! -e $SSH_PASSWORD_POLICY ]]; then
+        ssh_write_password_policy yes
+    elif grep -qE '^[[:space:]]*PasswordAuthentication[[:space:]]+no([[:space:]]|$)' "$SSH_PASSWORD_POLICY"; then
+        info "Existing key-only SSH policy preserved; use 'linxira-config ssh password on' to re-enable passwords."
+    fi
     sudo systemctl enable --now sshd
     if ! systemctl is-active --quiet sshd 2>/dev/null; then
         error "sshd failed to start; recent journal:"$(printf '\n')"$(sudo journalctl -u sshd -n 15 --no-pager 2>/dev/null)"
@@ -2352,6 +2494,8 @@ case "${1:-help}" in
             # 事务后端门控继续覆盖 security harden 等其他 mutation。
             on|enable) ssh_on ;;
             off|disable) ssh_off ;;
+            harden) ssh_harden "${@:3}" ;;
+            password) ssh_password_manage "${@:3}" ;;
             start) require_root; sudo systemctl start sshd; success "sshd started" ;;
             stop) require_root; sudo systemctl stop sshd; success "sshd stopped" ;;
             status|port|key|authorized) ssh_manage "${@:2}" ;;
